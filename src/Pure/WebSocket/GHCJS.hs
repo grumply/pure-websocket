@@ -43,6 +43,9 @@ import Pure.WebSocket.Message
 import Pure.WebSocket.TypeRep
 import Pure.WebSocket.Request
 
+-- from bytestring
+import qualified Data.ByteString.Lazy as BSL
+
 -- from ghcjs-base
 import qualified GHCJS.Foreign.Callback as CB
 import qualified GHCJS.Buffer as GB
@@ -70,6 +73,8 @@ import Unsafe.Coerce
 
 -- from unordered-containers
 import qualified Data.HashMap.Strict as Map
+
+type LazyByteString = BSL.ByteString
 
 #ifdef __GHCJS__
 foreign import javascript unsafe

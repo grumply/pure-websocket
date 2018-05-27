@@ -15,13 +15,13 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveAnyClass #-}
-module Pure.WebSocket.GHC (module Pure.WebSocket.GHC, S.SockAddr) where
+module Pure.WebSocket.GHC (module Pure.WebSocket.GHC, S.SockAddr, S.Socket, WS.makeListenSocket, S.accept) where
 
 -- from pure-json
 import Pure.Data.JSON as AE
 
 -- from pure-txt
-import Pure.Txt (Txt,ToTxt(..),FromTxt(..))
+import Pure.Data.Txt (Txt,ToTxt(..),FromTxt(..))
 
 -- from pure-websocket (local)
 import Pure.WebSocket.API
@@ -36,10 +36,14 @@ import Pure.WebSocket.Request
 -- from base
 import Control.Concurrent
 import Control.Exception as E
+import Control.Monad
+import Data.Foldable (for_)
 import Data.IORef
 import Data.Int
+import Data.List as List
 import Data.Maybe
 import Data.Monoid
+import Data.Proxy
 import Data.Ratio
 import GHC.Generics
 import System.IO
@@ -93,7 +97,7 @@ data WebSocket_
     { wsSocket            :: Maybe (S.SockAddr,S.Socket,WS.Connection,WS.Stream)
     , wsReceiver          :: Maybe ThreadId
     , wsDispatchCallbacks :: !(Map.HashMap Txt [IORef (Dispatch -> IO ())])
-    , wsStatus            :: WSStatus
+    , wsStatus            :: Status
     , wsStatusCallbacks   :: ![IORef (Status -> IO ())]
     , wsBytesReadLimits   :: IORef (Int64,Int64)
     }
@@ -124,17 +128,17 @@ setStatus ws_ s = do
 onDispatch :: WebSocket -> Txt -> (Dispatch -> IO ()) -> IO DispatchCallback
 onDispatch ws_ hdr f = do
   cb <- newIORef f
-  atomicModifyIORef' ws_ $ \ws -> (ws { wsDispatchCallbacks = Map.insertWith (flip (++)) hdr [(dcid,f)] (wsDispatchCallbacks ws) },())
+  atomicModifyIORef' ws_ $ \ws -> (ws { wsDispatchCallbacks = Map.insertWith (flip (++)) hdr [cb] (wsDispatchCallbacks ws) },())
   return $ DispatchCallback cb $
     atomicModifyIORef' ws_ $ \ws -> (ws { wsDispatchCallbacks = Map.adjust (List.filter (/= cb)) hdr (wsDispatchCallbacks ws) },())
 
 -- | Initialize a websocket without connecting.
 websocket :: IO WebSocket
-websocket tp = do
+websocket = do
   brl <- newIORef (8 * 1024 * 1024, 8 * 1024 * 1024) -- 2 Mib
   newIORef WebSocket
     { wsSocket            = Nothing
-    , wsReceiveThread     = Nothing
+    , wsReceiver          = Nothing
     , wsDispatchCallbacks = Map.empty
     , wsStatus            = Unopened
     , wsStatusCallbacks   = []
@@ -177,7 +181,7 @@ makeExhaustible readCount ws_ sock (i,o) = do
 
 -- Construct a server websocket from an open socket.
 serverWS :: S.Socket -> IO WebSocket
-serverWS sock = liftIO $ do
+serverWS sock = do
   sa <- S.getSocketName sock
   ws_ <- websocket
 
@@ -199,7 +203,7 @@ serverWS sock = liftIO $ do
 
   rt <- forkIO $ receiveLoop sock ws_ brr c
 
-  modifyIORef' ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsReceiveThread = Just rt, wsStatus = Opened }
+  modifyIORef' ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsReceiver = Just rt, wsStatus = Opened }
   return ws_
 
 clientWS :: String -> Int -> IO WebSocket
@@ -214,7 +218,7 @@ clientWS host port = do
       case msock of
         Nothing -> do
           setStatus ws_ Connecting
-          forkIO $ do
+          void $ forkIO $ do
             gen <- newStdGen
             let (r,_) = randomR (1,2 ^ n - 1) gen
                 i = interval * r
@@ -226,14 +230,14 @@ clientWS host port = do
           ws <- readIORef ws_
           wsStream <- makeExhaustible (wsBytesReadLimits ws) ws_ sock streams
           c <- WS.runClientWithStream wsStream host "/" WS.defaultConnectionOptions [] return
+          ws <- readIORef ws_
           _ <- onStatus ws_ $ \status ->
             case status of
               Closed _ -> connectWithExponentialBackoff ws_ 0
               _        -> return ()
-          rt <- forkIO $ receiveLoop sock ws wsBytesReadRef c
-          modifyIORef ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsReceiveThread = Just rt }
+          rt <- forkIO $ receiveLoop sock ws_ (wsBytesReadLimits ws) c
+          modifyIORef ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsReceiver = Just rt }
           setStatus ws_ Opened
-          return ws_
 
 #ifdef SECURE
 serverWSS :: S.Socket -> SSL -> IO WebSocket
@@ -256,7 +260,7 @@ serverWSS sock ssl = do
 
   rt <- forkIO $ receiveLoop sock ws_ brr c
 
-  modifyIORef' ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsReceiveThread = Just rt, wsStatus = Opened }
+  modifyIORef' ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsReceiver = Just rt, wsStatus = Opened }
   return ws_
 
 clientWSS :: String -> Int -> IO WebSocket
@@ -300,33 +304,28 @@ close ws_ cr = do
     S.close sock
     WS.close s
     writeIORef ws_ ws { wsSocket = Nothing }
-    for_ wsReceiveThread killThread
+    for_ (wsReceiver ws) killThread
   setStatus ws_ (Closed cr)
-    -- liftIO $ E.handle (\(e :: SomeException) -> print e >> return ()) $
-    --   WS.sendClose c (BLC.pack "closed")
-    -- liftIO $ E.handle (\(e :: SomeException) -> print e >> return ()) $
-    --   S.sClose sock
 
--- I hate throwing exceptions, but maybe I should here....
 receiveLoop sock ws_ brr_ c = go
   where
     go = do
-      eem <- E.handle (\(_ :: WS.ConnectionException) -> return (Left (Closed InvalidMessage))) $
+      eem0 <- E.handle (\(_ :: WS.ConnectionException) -> return (Left (Closed InvalidMessage))) $
               Right <$> WS.receiveDataMessage c
-      case eem of
-        Left e -> return (Left (Closed UnexpectedClosure))
-        Right (WS.Binary b) -> return $ Right b
-        Right (WS.Text t _) -> return $ Right t
+      let eem = case eem0 of
+                  Left e -> Left (Closed UnexpectedClosure)
+                  Right (WS.Binary b) -> Right b
+                  Right (WS.Text t _) -> Right t
 #if defined(DEBUGWS) || defined(DEVEL)
       Prelude.putStrLn $ "Received websocket message: " ++ show eem
 #endif
       case eem of
-        Right str -> do
+        Right str ->
           case eitherDecode' str of
             Left _  -> close ws_ InvalidMessage
-            Right m -> dispatch m >> go
+            Right m -> do
               ws <- readIORef ws_
-              case Map.lookup h wsDispatchCallbacks of
+              case Map.lookup (ep m) (wsDispatchCallbacks ws) of
                 Nothing -> do
 #if defined(DEBUGWS) || defined(DEVEL)
                   Prelude.putStrLn $ "Unhandled message: " ++ show (encode m)
@@ -336,7 +335,7 @@ receiveLoop sock ws_ brr_ c = go
 #if defined(DEBUGWS) || defined(DEVEL)
                   Prelude.putStrLn $ "Dispatching message: " ++ show (encode m)
 #endif
-                  for_ cbs ($ m)
+                  for_ cbs (readIORef >=> ($ m))
                   go
 
         Left (Closed cr) -> do
@@ -429,10 +428,9 @@ sendRaw ws_ b = do
                  (Right <$> WS.sendTextData c (TL.decodeUtf8 b))
       case eum of
         Left _ -> do
-          close ws_ InvalidMesage
-          return (Closed InvalidMessage)
-        _      -> return ()
-      return ewssu
+          close ws_ InvalidMessage
+          return (Left (Closed InvalidMessage))
+        _ -> return (Right ())
     Nothing -> return (Left wsStatus)
 
 --------------------------------------------------------------------------------
@@ -460,7 +458,8 @@ request ws_ rqty_proxy req f = do
   sendRaw ws_ $ encode $ encodeDispatch (requestHeader rqty_proxy) req
   return dpc
 
-apiRequest :: ( Req rqTy ~ request
+apiRequest :: ( Request rqTy
+              , Req rqTy ~ request
               , ToJSON request
               , Identify request
               , I request ~ rqI
@@ -484,25 +483,24 @@ respond :: ( Request rqTy
            , Rsp rqTy ~ response
            , ToJSON response
            )
-        => Proxy rqTy
-        -> (IO () -> Either Dispatch (Either LazyByteString response -> IO (Either WSStatus ()),request) -> IO ())
+        => WebSocket
+        -> Proxy rqTy
+        -> (IO () -> Either Dispatch (Either LazyByteString response -> IO (Either Status ()),request) -> IO ())
         -> IO DispatchCallback
 respond ws_ rqty_proxy f = do
+  s_ <- newIORef undefined
   let header = requestHeader rqty_proxy
       bhvr m = f (readIORef s_ >>= dcCleanup)
                  $ maybe (Left m) (\rq -> Right
-                    (sendRaw . either id (encode . encodeDispatch (responseHeader rqty_proxy rq))
+                    (sendRaw ws_ . either id (encode . encodeDispatch (responseHeader rqty_proxy rq))
                     , rq
                     )
                  ) (decodeDispatch m)
-  onDispatch ws_ header bhvr
+  dcb <- onDispatch ws_ header bhvr
+  writeIORef s_ dcb
+  return dcb
 
-message :: ( MonadIO c
-           , ms <: '[State () WebSocket]
-           , Message mTy
-           , M mTy ~ msg
-           , ToJSON msg
-           )
+message :: ( Message mTy , M mTy ~ msg , ToJSON msg )
         => WebSocket
         -> Proxy mTy
         -> msg
@@ -510,11 +508,7 @@ message :: ( MonadIO c
 message ws_ mty_proxy m =
   sendRaw ws_ $ encode $ encodeDispatch (messageHeader mty_proxy) m
 
-apiMessage :: ( Message mTy
-              , M mTy ~ msg
-              , ToJSON msg
-              , (mTy ∈ msgs) ~ 'True
-              )
+apiMessage :: ( Message mTy , M mTy ~ msg , ToJSON msg , (mTy ∈ msgs) ~ 'True )
            => FullAPI msgs rqs
            -> WebSocket
            -> Proxy mTy

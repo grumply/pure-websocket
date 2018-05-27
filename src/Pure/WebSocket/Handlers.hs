@@ -25,10 +25,6 @@ import Pure.WebSocket.GHCJS
 import Pure.WebSocket.GHC
 #endif
 
-import qualified Data.ByteString.Lazy as BSL
-
-type LazyByteString = BSL.ByteString
-
 data ActiveEndpoints es
   where
     ActiveEndpointsNull

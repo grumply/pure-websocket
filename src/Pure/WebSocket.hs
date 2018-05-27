@@ -13,19 +13,20 @@ module Pure.WebSocket
   ) where
 
 #ifdef __GHCJS__
-import Pure.WebSocket.GHCJS    as Export
+import Pure.WebSocket.GHCJS     as Export
 #else
-import Pure.WebSocket.GHC      as Export
+import Pure.WebSocket.GHC       as Export
 #endif
 
-import Pure.WebSocket.API      as Export
-import Pure.WebSocket.Dispatch as Export
-import Pure.WebSocket.Endpoint as Export
-import Pure.WebSocket.Handlers as Export
-import Pure.WebSocket.Identify as Export
-import Pure.WebSocket.Message  as Export
-import Pure.WebSocket.Request  as Export
-import Pure.WebSocket.TypeRep  as Export
+import Pure.WebSocket.API       as Export
+import Pure.WebSocket.Callbacks as Export
+import Pure.WebSocket.Dispatch  as Export
+import Pure.WebSocket.Endpoint  as Export
+import Pure.WebSocket.Handlers  as Export
+import Pure.WebSocket.Identify  as Export
+import Pure.WebSocket.Message   as Export
+import Pure.WebSocket.Request   as Export
+import Pure.WebSocket.TypeRep   as Export
 
 import Data.Char
 import Data.Proxy

@@ -1,0 +1,106 @@
+name:                pure-websocket
+version:             0.7.0.0
+synopsis:            
+homepage:            github.com/grumply/pure-websocket
+license:             BSD3
+license-file:        LICENSE
+author:              Sean Mackenzie
+maintainer:          sean@grump.ly
+category:            Web
+build-type:          Simple
+cabal-version:       >=1.10
+
+Flag secure
+     Description: enable secure server-side websockets
+     Default: False
+     Manual: True
+
+Flag debugws
+     Description: debug websocket messages
+     Default: False
+     Manual: True
+
+Flag devel
+     Description: development debugging
+     Default: False
+     Manual: True
+
+Flag debugapi
+     Description: log failed parsing at api endpoints
+     Default: False
+     Manual: True
+
+Flag use-template-haskell
+     Description: enable template haskell for message/request derivation
+     Default: True
+     Manual: True
+
+library
+  if flag(debugws)
+    cpp-options: -DDEBUGWS
+
+  if flag(devel)
+    cpp-options: -DDEVEL
+
+  if flag(debugapi)
+    cpp-options: -DDEBUGAPI
+
+  if flag(use-template-haskell)
+    cpp-options: -DUSE_TEMPLATE_HASKELL
+
+  exposed-modules:
+      Pure.WebSocket.API.Implementation
+    , Pure.WebSocket.API.Interface
+    , Pure.WebSocket.API.ProxyList
+    , Pure.WebSocket.API
+    , Pure.WebSocket.Callbacks
+    , Pure.WebSocket.Dispatch
+    , Pure.WebSocket.Endpoint
+    , Pure.WebSocket.Handlers
+    , Pure.WebSocket.Identify
+    , Pure.WebSocket.Message
+    , Pure.WebSocket.Request
+    , Pure.WebSocket.TypeRep
+    , Pure.WebSocket
+
+  build-depends:
+    base >= 4.8,
+    bytestring,
+    pure-txt >= 0.7 && < 1,
+    pure-json >= 0.7 && < 1,
+    unordered-containers
+
+  if flag(use-template-haskell)
+    build-depends: template-haskell
+
+  if (impl(ghcjs))
+
+    build-depends:
+      ghcjs-base,
+      pure-lifted >= 0.7 && <1
+
+    other-modules:
+      Pure.WebSocket.GHCJS
+
+  else
+
+    build-depends:
+        websockets      >= 0.11
+      , network         >= 2.6
+      , io-streams      >= 1.4
+      , random
+      , text
+
+    other-modules:
+      Pure.WebSocket.GHC
+
+    if flag(secure)
+
+      cpp-options:    -DSECURE
+
+      build-depends:
+          HsOpenSSL       >= 0.11.1.1 && < 0.12
+        , openssl-streams >= 1.2      && < 1.5
+
+  hs-source-dirs:      src
+  default-language:    Haskell2010

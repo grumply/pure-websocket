@@ -271,11 +271,12 @@ request :: ( Request rqTy
          -> IO DispatchCallback
 request ws_ rqty_proxy req f = do
   s_ <- newIORef undefined
-  let header = responseHeader rqty_proxy req
+  let rspHdr = responseHeader rqty_proxy req
+      reqHdr = requestHeader rqty_proxy
       bhvr m = f (readIORef s_ >>= dcCleanup) (maybe (Left m) Right (decodeDispatch m))
-  dpc <- onDispatch ws_ header bhvr
+  dpc <- onDispatch ws_ rspHdr bhvr
   writeIORef s_ dpc
-  send ws_ header req
+  send ws_ reqHdr req
   return dpc
 
 apiRequest :: ( Request rqTy

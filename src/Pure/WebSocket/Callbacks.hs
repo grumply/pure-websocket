@@ -3,14 +3,15 @@ module Pure.WebSocket.Callbacks where
 -- from base
 import Data.IORef
 
+-- from pure-lifted
+import Pure.Data.Lifted
+
 -- from pure-websocket (local)
 import Pure.WebSocket.Dispatch
 
 data CloseReason = MessageLengthExceeded | InvalidMessage | UnexpectedClosure
-  deriving (Eq,Show)
 
-data Status = Unopened | Closed CloseReason | Opened | Connecting
-  deriving (Eq,Show)
+data Status = Unopened | Closed CloseReason | Opened | Errored JSV | Connecting
 
 data DispatchCallback = DispatchCallback
   { dcRef :: IORef (Dispatch -> IO ())

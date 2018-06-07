@@ -88,7 +88,7 @@ type CB = CB.Callback (JSV -> IO ())
 
 data WebSocket_
   = WebSocket
-    { wsSocket            :: Maybe (JSV,CB,CB,CB,CB)
+    { wsSocket            :: Maybe (JSV,CB,CB,CB,CB,StatusCallback)
     , wsDispatchCallbacks :: !(Map.HashMap Txt [IORef (Dispatch -> IO ())])
     , wsStatus            :: Status
     , wsStatusCallbacks   :: ![IORef (Status -> IO ())]
@@ -143,7 +143,7 @@ newWS host port secure = do
       msock <- tryNewWebSocket (toTxt $ (if secure then "wss://" else "ws://") ++ host ++ ':': show port)
       case msock of
         Nothing -> do
-          setStatus ws_ Connecting
+          when (n == 0) $ setStatus ws_ Connecting
           void $ forkIO $ do
             i <- random (interval * (2 ^ n - 1))
             threadDelay i
@@ -158,7 +158,7 @@ newWS host port secure = do
           addEventListener sock "close" closeCallback False
 
           errorCallback <- CB.syncCallback1 CB.ContinueAsync $ \err -> do
-            setStatus ws_ (Closed UnexpectedClosure)
+            setStatus ws_ (Errored err)
           addEventListener sock "error" errorCallback False
 
           messageCallback <- CB.syncCallback1 CB.ContinueAsync $ \ev -> do
@@ -183,8 +183,21 @@ newWS host port secure = do
 
           addEventListener sock "message" messageCallback False
 
+          scb <- onStatus ws_ $ \case
+            Closed UnexpectedClosure -> do
+              ws <- readIORef ws_
+              let Just (_,ocb,ccb,ecb,mcb,scb) = wsSocket ws
+              CB.releaseCallback ocb
+              CB.releaseCallback ccb
+              CB.releaseCallback ecb
+              CB.releaseCallback mcb
+              scCleanup scb
+              modifyIORef ws_ $ \ws -> ws { wsSocket = Nothing }
+              connectWithExponentialBackoff ws_ 0
+            _ -> return ()
+
           modifyIORef ws_ $ \ws -> ws
-            { wsSocket = Just (sock,openCallback,closeCallback,errorCallback,messageCallback) }
+            { wsSocket = Just (sock,openCallback,closeCallback,errorCallback,messageCallback,scb) }
 
 clientWS :: String -> Int -> IO WebSocket
 clientWS h p = newWS h p False
@@ -209,7 +222,8 @@ foreign import javascript unsafe
 close :: WebSocket -> CloseReason -> IO ()
 close ws_ cr = do
   ws <- readIORef ws_
-  forM_ (wsSocket ws) $ \(sock,o,c,e,m) -> do
+  forM_ (wsSocket ws) $ \(sock,o,c,e,m,scb) -> do
+    scCleanup scb
     ws_close_js sock 1000 "closed"
     CB.releaseCallback o
     CB.releaseCallback c
@@ -226,7 +240,7 @@ send' ws_ m = go True
       case wsStatus ws of
         Opened ->
           case wsSocket ws of
-            Just (ws,_,_,_,_) -> do
+            Just (ws,_,_,_,_,_) -> do
 #if defined(DEBUGWS) || defined(DEVEL)
               putStrLn $ "send' sending: " ++ show (fmap pretty v)
 #endif

@@ -66,6 +66,7 @@ library
   build-depends:
     base >= 4.8,
     bytestring,
+    pure-lifted >= 0.7 && <1,
     pure-txt >= 0.7 && < 1,
     pure-json >= 0.7 && < 1,
     unordered-containers
@@ -76,8 +77,7 @@ library
   if (impl(ghcjs))
 
     build-depends:
-      ghcjs-base,
-      pure-lifted >= 0.7 && <1
+      ghcjs-base
 
     other-modules:
       Pure.WebSocket.GHCJS

@@ -327,7 +327,7 @@ respond ws_ rqty_proxy f = do
   let header = requestHeader rqty_proxy
       bhvr m = f (readIORef s_ >>= dcCleanup)
                  $ maybe (Left m) (\rq -> Right
-                    (send' ws_ . fmap (encodeDispatch (responseHeader rqty_proxy rq))
+                    (send' ws_ . either (Left . buildEncodedDispatchTxt (responseHeader rqty_proxy rq)) (Right . encodeDispatch (responseHeader rqty_proxy rq))
                     , rq
                     )
                  ) (decodeDispatch m)

@@ -195,9 +195,9 @@ serverWS sock = do
   pc <- WS.makePendingConnectionFromStream
           wsStream
           WS.defaultConnectionOptions
-            { WS.connectionStrictUnicode = True
-            , WS.connectionCompressionOptions = WS.PermessageDeflateCompression WS.defaultPermessageDeflate
-            }
+            -- { WS.connectionStrictUnicode = True
+            -- , WS.connectionCompressionOptions = WS.PermessageDeflateCompression WS.defaultPermessageDeflate
+            -- }
 
   c <- WS.acceptRequest pc
 

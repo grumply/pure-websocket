@@ -95,7 +95,7 @@ import qualified Data.HashMap.Strict as Map
 data WebSocket_
   = WebSocket
     { wsSocket            :: Maybe (S.SockAddr,S.Socket,WS.Connection,WS.Stream)
-    , wsReceiver          :: Maybe ThreadId
+    , wsReceivers         :: [ThreadId]
     , wsDispatchCallbacks :: !(Map.HashMap Txt [IORef (Dispatch -> IO ())])
     , wsStatus            :: Status
     , wsStatusCallbacks   :: ![IORef (Status -> IO ())]
@@ -138,7 +138,7 @@ websocket = do
   brl <- newIORef (8 * 1024 * 1024, 8 * 1024 * 1024) -- 2 Mib
   newIORef WebSocket
     { wsSocket            = Nothing
-    , wsReceiver          = Nothing
+    , wsReceivers         = []
     , wsDispatchCallbacks = Map.empty
     , wsStatus            = Unopened
     , wsStatusCallbacks   = []
@@ -201,10 +201,16 @@ serverWS sock = do
 
   c <- WS.acceptRequest pc
 
-  rt <- forkIO $ receiveLoop sock ws_ brr c
-
-  modifyIORef' ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsReceiver = Just rt, wsStatus = Opened }
+  modifyIORef' ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsStatus = Opened }
   return ws_
+
+activate :: WebSocket -> IO ()
+activate ws_ = do
+  ws <- readIORef ws_
+  let Just (_,sock,c,_) = wsSocket ws
+      brr = wsBytesReadLimits ws
+  rt <- forkIO $ receiveLoop sock ws_ brr c
+  modifyIORef' ws_ $ \ws -> ws { wsReceivers = rt : wsReceivers ws }
 
 clientWS :: String -> Int -> IO WebSocket
 clientWS host port = do
@@ -236,7 +242,7 @@ clientWS host port = do
               Closed _ -> connectWithExponentialBackoff ws_ 0
               _        -> return ()
           rt <- forkIO $ receiveLoop sock ws_ (wsBytesReadLimits ws) c
-          modifyIORef ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsReceiver = Just rt }
+          modifyIORef ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsReceivers = rt:wsReceivers ws }
           setStatus ws_ Opened
 
 #ifdef SECURE
@@ -258,9 +264,7 @@ serverWSS sock ssl = do
 
   c <- WS.acceptRequest pc
 
-  rt <- forkIO $ receiveLoop sock ws_ brr c
-
-  modifyIORef' ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsReceiver = Just rt, wsStatus = Opened }
+  modifyIORef' ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsStatus = Opened }
   return ws_
 
 clientWSS :: String -> Int -> IO WebSocket
@@ -304,7 +308,7 @@ close ws_ cr = do
     S.close sock
     WS.close s
     writeIORef ws_ ws { wsSocket = Nothing }
-    for_ (wsReceiver ws) killThread
+    for_ (wsReceivers ws) killThread
   setStatus ws_ (Closed cr)
 
 receiveLoop sock ws_ brr_ c = go

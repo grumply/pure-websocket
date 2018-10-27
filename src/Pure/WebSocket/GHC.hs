@@ -308,8 +308,8 @@ close ws_ cr = do
     S.close sock
     WS.close s
     writeIORef ws_ ws { wsSocket = Nothing }
-    for_ (wsReceivers ws) killThread
   setStatus ws_ (Closed cr)
+  for_ (wsReceivers ws) killThread
 
 receiveLoop sock ws_ brr_ c = go
   where

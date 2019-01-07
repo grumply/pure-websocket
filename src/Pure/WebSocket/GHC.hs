@@ -154,8 +154,8 @@ makeExhaustible readCount ws_ sock (i,o) = do
   sa <- S.getPeerName sock
   i' <- limit sa i
   stream <- WS.makeStream
-    (Streams.read i')
-    (\b -> Streams.write (BL.toStrict <$> b) o)
+    (Streams.read i' `E.catch` \(_ :: SomeException) -> return Nothing)
+    (\b -> Streams.write (BL.toStrict <$> b) o `E.catch` \(_ :: SomeException) -> return ())
   return stream
   where
 

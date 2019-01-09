@@ -214,8 +214,9 @@ activate ws_ = do
 
 clientWS :: String -> Int -> IO WebSocket
 clientWS host port = do
+  -- TODO: make the backoff method configurable
   ws <- websocket
-  connectWithExponentialBackoff ws 0
+  connectWithExponentialBackoff ws 5
   return ws
   where
     connectWithExponentialBackoff ws_ n = do
@@ -225,11 +226,11 @@ clientWS host port = do
         Nothing -> do
           setStatus ws_ Connecting
           void $ forkIO $ do
-            gen <- newStdGen
+            gen <- newStdGen -- yuck
             let (r,_) = randomR (1,2 ^ n - 1) gen
                 i = interval * r
             threadDelay i
-            connectWithExponentialBackoff ws_ (min (n + 1) 12) -- ~ 200 second max interval; average max interval 100 seconds
+            connectWithExponentialBackoff ws_ (min (n + 1) 8)
         Just sock -> do
           sa <- S.getPeerName sock
           streams <- Streams.socketToStreams sock
@@ -239,7 +240,7 @@ clientWS host port = do
           ws <- readIORef ws_
           _ <- onStatus ws_ $ \status ->
             case status of
-              Closed _ -> connectWithExponentialBackoff ws_ 0
+              Closed _ -> connectWithExponentialBackoff ws_ 5
               _        -> return ()
           rt <- forkIO $ receiveLoop sock ws_ (wsBytesReadLimits ws) c
           modifyIORef ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsReceivers = rt:wsReceivers ws }

@@ -134,26 +134,49 @@ websocket = do
 
 newWS :: String -> Int -> Bool -> IO WebSocket
 newWS host port secure = do
+  -- TODO: make the delay method configurable.
   ws <- websocket
-  connectWithExponentialBackoff ws 0
+  delayFactor_ <- newIORef 6
+  connectWithExponentialBackoff ws delayFactor_
   return ws
   where
-    connectWithExponentialBackoff ws_ n = do
+    connectWithExponentialBackoff ws_ df_ = do
+
+      df <- readIORef df_
+      when (df == 6) (setStatus ws_ Connecting)
+
       let interval = 50000
+
       msock <- tryNewWebSocket (toTxt $ (if secure then "wss://" else "ws://") ++ host ++ ':': show port)
-      case msock of
-        Nothing -> do
-          when (n == 0) $ setStatus ws_ Connecting
-          void $ forkIO $ do
-            i <- random (interval * (2 ^ n - 1))
+
+      let retry = void $ forkIO $ do
+            delay <- readIORef df_
+
+            -- vary the delay to try to avoid thundering herd
+            i <- random (interval * (2 ^ delay - 1))
             threadDelay i
-            connectWithExponentialBackoff ws_ (min (n + 1) 12) -- ~ 200 second max interval; average max interval 100 seconds
+
+            let
+#if defined(DEBUGWS) || defined(DEVEL)
+              newDelayFactor = 5 -- 800ms max, 400ms average
+#else
+              newDelayFactor = min (delay + 1) 9 -- max 50s
+#endif
+            writeIORef df_ newDelayFactor
+            connectWithExponentialBackoff ws_ df_
+
+      case msock of
+        Nothing -> retry
+
         Just sock -> do
-          openCallback <- CB.syncCallback1 CB.ContinueAsync $ \_ ->
+
+          openCallback <- CB.syncCallback1 CB.ContinueAsync $ \_ -> do
+            writeIORef df_ 6 -- this is why df_ needs to be wrapped in an IORef
             setStatus ws_ Opened
           addEventListener sock "open" openCallback False
 
-          closeCallback <- CB.syncCallback1 CB.ContinueAsync $ \_ ->
+          closeCallback <- CB.syncCallback1 CB.ContinueAsync $ \_ -> do
+            writeIORef df_ 6
             setStatus ws_ (Closed UnexpectedClosure)
           addEventListener sock "close" closeCallback False
 
@@ -193,7 +216,8 @@ newWS host port secure = do
               CB.releaseCallback mcb
               scCleanup scb
               modifyIORef ws_ $ \ws -> ws { wsSocket = Nothing }
-              connectWithExponentialBackoff ws_ 0
+              retry
+
             _ -> return ()
 
           modifyIORef ws_ $ \ws -> ws
@@ -213,6 +237,9 @@ tryNewWebSocket :: Txt -> IO (Maybe JSV)
 tryNewWebSocket url = do
   ws <- js_tryNewWebSocket url
   if isNull ws
+    -- I've never seen this return Nothing. Can it?
+    -- In fact, it caused a bug when I expected a
+    -- failed connection to return Nothing.
     then return Nothing
     else return (Just ws)
 

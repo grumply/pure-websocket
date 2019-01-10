@@ -69,6 +69,8 @@ library
     pure-lifted >= 0.7 && <1,
     pure-txt >= 0.7 && < 1,
     pure-json >= 0.7 && < 1,
+    pure-time >= 0.7 && < 1,
+    mtl,
     unordered-containers
 
   if flag(use-template-haskell)

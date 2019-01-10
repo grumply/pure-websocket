@@ -1,8 +1,8 @@
 { mkDerivation, ghc, ghcjs-base, base, bytestring
 , io-streams, network, random, HsOpenSSL, openssl-streams, websockets
-, stdenv, template-haskell, text
+, stdenv, template-haskell, text, mtl
 , unordered-containers
-, pure-txt, pure-json, pure-lifted
+, pure-txt, pure-json, pure-lifted, pure-time
 , secure ? false
 , debugws ? false
 , debugapi ? false
@@ -14,7 +14,7 @@ mkDerivation {
   version = "0.7.0.0";
   src = ./.;
   libraryHaskellDepends = [
-    base bytestring text unordered-containers pure-lifted pure-txt pure-json
+    base bytestring text unordered-containers pure-lifted pure-txt pure-json mtl pure-time
   ] ++ (if useTemplateHaskell then [ template-haskell ] else [])
     ++ (if ghc.isGhcjs or false then [ ghcjs-base ] else [
         io-streams network random websockets

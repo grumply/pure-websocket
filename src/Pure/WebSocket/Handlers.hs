@@ -95,7 +95,7 @@ type ReqHandlers rqs = Endpoints RequestHandler rqs
 data MessageHandler mTy
   where
     MessageHandler
-      :: (Message mTy, M mTy ~ msg, ToJSON msg)
+      :: (Message mTy, M mTy ~ msg, FromJSON msg)
       => Proxy mTy
       -> (IO () -> Either Dispatch msg -> IO ())
       -> MessageHandler mTy
@@ -118,7 +118,7 @@ data MessageHandler mTy
 -- > accepts heartbeat $ \done -> \case
 -- >   Left dsp -> ...
 -- >   Right () -> ...
-accepts :: (Message mTy, M mTy ~ msg, ToJSON msg)
+accepts :: (Message mTy, M mTy ~ msg, FromJSON msg)
         => Proxy mTy
         -> (IO () -> Either Dispatch msg -> IO ())
         -> MessageHandler mTy
@@ -132,7 +132,6 @@ instance ( GetHandler MessageHandler message msgs'
          , EnactEndpoints MessageAPI MessageHandler msgs msgs''
          , Message message
          , M message ~ msg
-         , ToJSON msg
          , FromJSON msg
          )
   => EnactEndpoints MessageAPI MessageHandler (message ': msgs) msgs' where
@@ -142,7 +141,6 @@ instance ( GetHandler MessageHandler message msgs'
         let p = Proxy :: Proxy message
             mhs' = deleteHandler p mhs :: MsgHandlers msgs''
         amh <- onMessage ws_ p f
-                 -- ((unsafeCoerce f) :: IO () -> Either Dispatch msg -> IO ())
         ams <- enactEndpoints ws_ ms mhs'
         return $ ActiveEndpointsCons pm (Endpoint (messageHeader p) amh) ams
 
@@ -163,7 +161,6 @@ instance ( GetHandler RequestHandler request rqs'
         let p = Proxy :: Proxy request
             mhs' = deleteHandler p mhs :: ReqHandlers rqs''
         amh <- respond ws_ p f
-                 -- ((unsafeCoerce f) :: IO () -> Either Dispatch (Either LazyByteString response -> IO (Either Status ()),req) -> IO ())
         ams <- enactEndpoints ws_ ms mhs'
         return $ ActiveEndpointsCons pm (Endpoint (requestHeader p) amh) ams
 
@@ -182,18 +179,18 @@ data Implementation msgs rqs msgs' rqs'
 --
 -- The type is rather hairy. Note that `TListAppend` guarantees uniqueness.
 --
--- (<+++>) :: (TListAppend (Endpoints RequestHandler c) rqsl' rqsr' rqs'
---            ,TListAppend (Endpoints MessageHandler c) msgsl' msgsr' msgs'
---            ,TListAppend (API Request) rqsl rqsr rqs
---            ,TListAppend (API Message) msgsl msgsr msgs
---            ,EnactEndpoints RequestAPI RequestHandler rqs rqs'
---            ,EnactEndpoints MessageAPI MessageHandler msgs msgs'
---            )
---         => Implementation msgsl rqsl msgsl' rqsl'
---         -> Implementation msgsr rqsr msgsr' rqsr'
---         -> Implementation msgs rqs msgs' rqs'
-(Impl (API ml rl) eml erl) <+++> (Impl (API mr rr) emr err) =
-  Impl (API (ml <++> mr) (rl <++> rr)) (eml <++> emr) (erl <++> err)
+-- (<++++>) :: (TListAppend (Endpoints RequestHandler c) rqsl' rqsr' rqs'
+--             ,TListAppend (Endpoints MessageHandler c) msgsl' msgsr' msgs'
+--             ,TListAppend (API Request) rqsl rqsr rqs
+--             ,TListAppend (API Message) msgsl msgsr msgs
+--             ,EnactEndpoints RequestAPI RequestHandler rqs rqs'
+--             ,EnactEndpoints MessageAPI MessageHandler msgs msgs'
+--             )
+--          => Implementation msgsl rqsl msgsl' rqsl'
+--          -> Implementation msgsr rqsr msgsr' rqsr'
+--          -> Implementation msgs rqs msgs' rqs'
+(Impl (API ml rl) eml erl) <++++> (Impl (API mr rr) emr err) =
+  Impl (API (ml <+++> mr) (rl <+++> rr)) (eml <+++> emr) (erl <+++> err)
 
 -- | Given an Implementation of an API, execute the implementation and return a corresponding ActiveAPI.
 enact :: WebSocket -> Implementation msgs rqs msgs' rqs' -> IO (ActiveAPI msgs rqs)
@@ -203,4 +200,3 @@ enact ws_ (Impl local mhs rhs) = do
   arapi <- enactEndpoints ws_ rapi rhs
   let active = ActiveAPI amapi arapi
   return active
-

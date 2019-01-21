@@ -132,17 +132,14 @@ class Build (f :: k -> *) (g :: [k] -> *) | g -> f where
 instance Build Proxy PList where
   (<:>) = PCons
 
-infixr 3 <++>
+infixr 3 <+++>
 class (Appended elems elems' ~ elems'')
     => TListAppend (f :: [k] -> *) (elems :: [k]) (elems' :: [k]) (elems'' :: [k])
   where
-    (<++>) :: f elems -> f elems' -> f elems''
+    (<+++>) :: f elems -> f elems' -> f elems''
 
 instance (Appended '[] es ~ es) => TListAppend f '[] es es where
-  (<++>) _ r = r
-
--- instance (Appended '[] xs ~ xs) => Append PList '[] xs xs where
---   (<++>) l (PCons x xs) = PCons x (l <++> xs)
+  (<+++>) _ r = r
 
 instance ( Removed (y ': ys) x   ~ (y ': ys)
          , TListAppend PList xs (y ': ys) zs
@@ -150,13 +147,13 @@ instance ( Removed (y ': ys) x   ~ (y ': ys)
          )
     => TListAppend PList (x ': xs) (y ': ys) (x ': zs)
   where
-    (<++>) (PCons (x :: Proxy x) xs) ys = x <:> (xs <++> ys)
+    (<+++>) (PCons (x :: Proxy x) xs) ys = x <:> (xs <+++> ys)
 
--- Note this is just a synonym for <++> with a lower precedence; it is expected to be used to
+-- Note this is just a synonym for <+++> with a lower precedence; it is expected to be used to
 -- conjoin two root-level APIs after all other combinators have been applied to the two subtrees.
 -- This is useful when combining two disparate APIs that are  possibly written and defined in
 -- separate libraries.
-infixr 1 <||>
-(<||>) :: TListAppend f xs ys zs => f xs -> f ys -> f zs
-(<||>) = (<++>)
+infixr 1 <|||>
+(<|||>) :: TListAppend f xs ys zs => f xs -> f ys -> f zs
+(<|||>) = (<+++>)
 

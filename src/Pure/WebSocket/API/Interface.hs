@@ -56,7 +56,7 @@ instance ( Appended (x ': xs) (y ': ys) ~ zs
          )
     => TListAppend (API f) (x ': xs) (y ': ys) zs
   where
-    (<++>) (APICons x xs) ys = APICons x (xs <++> ys)
+    (<+++>) (APICons x xs) ys = APICons x (xs <+++> ys)
 
 type MessageAPI = API Message
 type RequestAPI = API Request
@@ -127,4 +127,4 @@ api msgs reqs = API (toAPI msgs) (toAPI reqs)
            )
         => FullAPI ms rs -> FullAPI ms' rs' -> FullAPI (Appended ms ms') (Appended rs rs')
 (<:+:>) (API msl rsl) (API msr rsr) =
-  api (fromAPI msl <++> fromAPI msr) (fromAPI rsl <++> fromAPI rsr)
+  api (fromAPI msl <+++> fromAPI msr) (fromAPI rsl <+++> fromAPI rsr)

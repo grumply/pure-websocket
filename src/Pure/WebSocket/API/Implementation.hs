@@ -43,7 +43,7 @@ instance ( Removed (y ': ys) x ~ (y ': ys)
          )
     => TListAppend (Endpoints hndlr) (x ': xs) (y ': ys) (x ': zs)
   where
-    (<++>) (EndpointsCons x xs) ys = EndpointsCons x (xs <++> ys)
+    (<+++>) (EndpointsCons x xs) ys = EndpointsCons x (xs <+++> ys)
 
 
 -- instance es ~ (e ': xs)

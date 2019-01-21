@@ -1,4 +1,8 @@
-{-# LANGUAGE CPP, FlexibleContexts, RankNTypes, TypeApplications, LambdaCase, TypeOperators, ScopedTypeVariables, GADTs, DataKinds #-}
+{-# LANGUAGE CPP, FlexibleContexts, RankNTypes, TypeApplications, LambdaCase,
+             TypeOperators, ScopedTypeVariables, GADTs, DataKinds,
+             FlexibleInstances, MultiParamTypeClasses, FunctionalDependencies,
+             GeneralizedNewtypeDeriving
+  #-}
 #ifdef USE_TEMPLATE_HASKELL
 {-# LANGUAGE TemplateHaskell #-}
 #endif
@@ -13,10 +17,12 @@ module Pure.WebSocket
     remoteDebug,
     notify,
     Responding,
+    responding,
+    responding',
     reply,
-    done,
-    req,
-    handle,
+    Awaiting,
+    awaiting,
+    awaiting',
     module Export
   ) where
 
@@ -40,6 +46,7 @@ import Pure.WebSocket.Message   as Export
 import Pure.WebSocket.Request   as Export
 import Pure.WebSocket.TypeRep   as Export
 
+import Control.Applicative
 import Control.Concurrent
 import Control.Monad
 import Data.Char
@@ -47,7 +54,11 @@ import Data.Foldable
 import Data.Proxy
 import Data.Unique
 
-import Control.Monad.Reader as R
+import Control.Monad.Fail
+import Control.Monad.Fix
+import Control.Monad.Trans
+import Control.Monad.Reader
+import Control.Monad.IO.Class as Export
 
 #ifdef USE_TEMPLATE_HASKELL
 import Language.Haskell.TH
@@ -125,12 +136,12 @@ remoteDebug :: ( Request rqTy
             -> IO ()
 remoteDebug api ws p rq f = do
   u   <- hashUnique <$> newUnique
-  u'  <- hashUnique <$> newUnique
   void $ forkIO $ void $ do
     s <- time
+    logJSON ("sending",u,rq)
     Export.apiRequest api ws p (u,rq) $ \_ rsp -> do
       e <- time
-      logJSON (rq,rsp,e - s)
+      logJSON ("received",u,rsp,e - s)
       traverse_ f rsp
 
 notify :: ( Message msgTy
@@ -146,28 +157,48 @@ notify :: ( Message msgTy
 notify api ws p msg =
   void $ forkIO $ void $ Export.apiMessage api ws p msg
 
+type ResponseString =
 #ifdef __GHCJS__
-type Responding request response = ReaderT (request,IO (),Either Txt response -> IO ()) IO
+  Txt
 #else
-type Responding request response = ReaderT (request,IO (),Either LazyByteString response -> IO ()) IO
+  LazyByteString
 #endif
 
-req :: Responding request response request
-req = do
-  (req,_,_) <- R.ask
-  return req
+class Close m where
+    close :: m ()
 
-done :: Responding request response ()
-done = do
-    (_,d,_) <- R.ask
-    lift d
+class Receive a m | m -> a where
+    receive :: m a
 
-reply :: response -> Responding request response ()
-reply rsp = do
-    (_,_,s) <- R.ask
-    lift (s $ Right rsp)
+class Reply a m | m -> a where
+    reply :: a -> m ()
+    replyRaw :: ResponseString -> m ()
 
-handle :: forall rqTy request response.
+newtype Responding request response a = Responding { unResponding :: ReaderT (request,IO (),Either ResponseString response -> IO ()) IO a }
+    deriving (Functor,Applicative,Monad,Alternative,MonadFail,MonadFix,MonadPlus)
+
+instance MonadIO (Responding request response) where
+    liftIO f = Responding (lift f)
+
+instance Receive request (Responding request response) where
+    receive = Responding $ do
+      (request,_,_) <- ask
+      return request
+
+instance Reply response (Responding request response) where
+    reply a = Responding $ do
+      (_,_,send) <- ask
+      lift $ send (Right a)
+    replyRaw s = Responding $ do
+      (_,_,send) <- ask
+      lift $ send (Left s)
+
+instance Close (Responding request response) where
+    close = Responding $ do
+      (_,f,_) <- ask
+      lift f
+
+responding :: forall rqTy request response.
               ( Request rqTy
               , Req rqTy ~ (Int,request)
               , Identify (Req rqTy)
@@ -177,6 +208,52 @@ handle :: forall rqTy request response.
               , ToJSON response
               )
            => Responding request response () -> RequestHandler rqTy
-handle rspndng = responds (Proxy @ rqTy) $ \done -> \case
-    Left dsp           -> return ()
-    Right (rsp,(_,rq)) -> runReaderT rspndng (rq,done,void . rsp)
+responding rspndng = responds (Proxy @rqTy) $ \done -> \case
+    Right (rsp,(_,rq)) -> runReaderT (unResponding rspndng) (rq,done,void . rsp)
+    _ -> return ()
+
+responding' :: forall rqTy request response.
+              ( Request rqTy
+              , Req rqTy ~ (Int,request)
+              , Identify (Req rqTy)
+              , I (Req rqTy) ~ Int
+              , FromJSON request
+              , Rsp rqTy ~ response
+              , ToJSON response
+              )
+           => Awaiting Dispatch () -> Responding request response () -> RequestHandler rqTy
+responding' errrng rspndng = responds (Proxy @rqTy) $ \done -> \case
+    Left dsp           -> runReaderT (unAwaiting errrng) (dsp,done)
+    Right (rsp,(_,rq)) -> runReaderT (unResponding rspndng) (rq,done,void . rsp)
+
+newtype Awaiting message a = Awaiting { unAwaiting :: ReaderT (message,IO ()) IO a }
+    deriving (Functor,Applicative,Monad,Alternative,MonadFail,MonadFix,MonadPlus)
+
+instance MonadIO (Awaiting message) where
+    liftIO f = Awaiting (lift f)
+
+instance Receive message (Awaiting message) where
+    receive = Awaiting (asks fst)
+
+instance Close (Awaiting message) where
+    close = Awaiting (asks snd >>= lift)
+
+awaiting :: forall msgTy message.
+          ( Message msgTy
+          , M msgTy ~ message
+          , FromJSON message
+          )
+       => Awaiting message () -> MessageHandler msgTy
+awaiting awtng = accepts (Proxy @msgTy) $ \done -> \case
+    Right msg -> runReaderT (unAwaiting awtng) (msg,done)
+    _ -> return ()
+
+awaiting' :: forall msgTy message.
+          ( Message msgTy
+          , M msgTy ~ message
+          , FromJSON message
+          )
+       => Awaiting Dispatch () -> Awaiting message () -> MessageHandler msgTy
+awaiting' errrng awtng = accepts (Proxy @msgTy) $ \done -> \case
+    Left dsp  -> runReaderT (unAwaiting errrng) (dsp,done)
+    Right msg -> runReaderT (unAwaiting awtng) (msg,done)

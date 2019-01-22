@@ -16,10 +16,12 @@ module Pure.WebSocket
     remote,
     remoteDebug,
     notify,
+    Stop(..),
+    Acquire(..),
+    Reply(..),
     Responding,
     responding,
     responding',
-    reply,
     Awaiting,
     awaiting,
     awaiting',
@@ -164,11 +166,11 @@ type ResponseString =
   LazyByteString
 #endif
 
-class Close m where
-    close :: m ()
+class Stop m where
+    stop :: m ()
 
-class Receive a m | m -> a where
-    receive :: m a
+class Acquire a m | m -> a where
+    acquire :: m a
 
 class Reply a m | m -> a where
     reply :: a -> m ()
@@ -180,8 +182,8 @@ newtype Responding request response a = Responding { unResponding :: ReaderT (re
 instance MonadIO (Responding request response) where
     liftIO f = Responding (lift f)
 
-instance Receive request (Responding request response) where
-    receive = Responding $ do
+instance Acquire request (Responding request response) where
+    acquire = Responding $ do
       (request,_,_) <- ask
       return request
 
@@ -193,8 +195,8 @@ instance Reply response (Responding request response) where
       (_,_,send) <- ask
       lift $ send (Left s)
 
-instance Close (Responding request response) where
-    close = Responding $ do
+instance Stop (Responding request response) where
+    stop = Responding $ do
       (_,f,_) <- ask
       lift f
 
@@ -232,11 +234,11 @@ newtype Awaiting message a = Awaiting { unAwaiting :: ReaderT (message,IO ()) IO
 instance MonadIO (Awaiting message) where
     liftIO f = Awaiting (lift f)
 
-instance Receive message (Awaiting message) where
-    receive = Awaiting (asks fst)
+instance Acquire message (Awaiting message) where
+    acquire = Awaiting (asks fst)
 
-instance Close (Awaiting message) where
-    close = Awaiting (asks snd >>= lift)
+instance Stop (Awaiting message) where
+    stop = Awaiting (asks snd >>= lift)
 
 awaiting :: forall msgTy message.
           ( Message msgTy

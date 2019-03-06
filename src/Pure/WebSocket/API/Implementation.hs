@@ -45,7 +45,6 @@ instance ( Removed (y ': ys) x ~ (y ': ys)
   where
     (<+++>) (EndpointsCons x xs) ys = EndpointsCons x (xs <+++> ys)
 
-
 -- instance es ~ (e ': xs)
 class GetHandler' (hndlr :: * -> *) (e :: *) (es :: [*]) (n :: Nat) where
   getHandler' :: Index n -> Endpoints hndlr es -> hndlr e

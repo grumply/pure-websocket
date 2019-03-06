@@ -125,6 +125,6 @@ api msgs reqs = API (toAPI msgs) (toAPI reqs)
            , ToAPI Message ms''
            , ToAPI Request rs''
            )
-        => FullAPI ms rs -> FullAPI ms' rs' -> FullAPI (Appended ms ms') (Appended rs rs')
+        => FullAPI ms rs -> FullAPI ms' rs' -> FullAPI ms'' rs''
 (<:+:>) (API msl rsl) (API msr rsr) =
   api (fromAPI msl <+++> fromAPI msr) (fromAPI rsl <+++> fromAPI rsr)

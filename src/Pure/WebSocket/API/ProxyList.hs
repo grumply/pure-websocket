@@ -141,9 +141,6 @@ class (Appended elems elems' ~ elems'')
 instance (Appended '[] es ~ es) => TListAppend f '[] es es where
   (<+++>) _ r = r
 
-instance (Appended es '[] ~ es) => TListAppend f es '[] es where
-  (<+++>) l _ = l
-
 instance ( Removed (y ': ys) x   ~ (y ': ys)
          , TListAppend PList xs (y ': ys) zs
          , Appended (x ': xs) (y ': ys) ~ (x ': zs)

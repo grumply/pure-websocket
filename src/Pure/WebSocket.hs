@@ -22,6 +22,7 @@ module Pure.WebSocket
     Responding,
     responding,
     responding',
+    respondWith,
     Awaiting,
     awaiting,
     awaiting',
@@ -227,6 +228,16 @@ responding' :: forall rqTy request response.
 responding' errrng rspndng = responds (Proxy @rqTy) $ \done -> \case
     Left dsp           -> runReaderT (unAwaiting errrng) (dsp,done)
     Right (rsp,(_,rq)) -> runReaderT (unResponding rspndng) (rq,done,void . rsp)
+
+respondWith :: ( Request rqTy
+               , Req rqTy ~ (Int,request)
+               , Identify (Req rqTy)
+               , I (Req rqTy) ~ Int
+               , FromJSON request
+               , Rsp rqTy ~ response
+               , ToJSON response
+               ) => (request -> IO response) -> RequestHandler rqTy
+respondWith f = responding $ acquire >>= liftIO . f >>= reply
 
 newtype Awaiting message a = Awaiting { unAwaiting :: ReaderT (message,IO ()) IO a }
     deriving (Functor,Applicative,Monad,Alternative,MonadFail,MonadFix,MonadPlus)

@@ -460,7 +460,7 @@ request ws_ rqty_proxy req f = do
       bhvr m = f (readIORef s_ >>= dcCleanup) (maybe (Left m) Right (decodeDispatch m))
   dpc <- onDispatch ws_ header bhvr
   writeIORef s_ dpc
-  sendRaw ws_ $ encode $ encodeDispatch (requestHeader rqty_proxy) req
+  sendRaw ws_ $ encodeBS $ encodeDispatch (requestHeader rqty_proxy) req
   return dpc
 
 apiRequest :: ( Request rqTy
@@ -497,7 +497,7 @@ respond ws_ rqty_proxy f = do
   let header = requestHeader rqty_proxy
       bhvr m = f (readIORef s_ >>= dcCleanup)
                  $ maybe (Left m) (\rq -> Right
-                    (sendRaw ws_ . either (buildEncodedDispatchByteString (responseHeader rqty_proxy rq)) (encode . encodeDispatch (responseHeader rqty_proxy rq))
+                    (sendRaw ws_ . either (buildEncodedDispatchByteString (responseHeader rqty_proxy rq)) (encodeBS . encodeDispatch (responseHeader rqty_proxy rq))
                     , rq
                     )
                  ) (decodeDispatch m)
@@ -511,7 +511,7 @@ message :: ( Message mTy , M mTy ~ msg , ToJSON msg )
         -> msg
         -> IO (Either Status ())
 message ws_ mty_proxy m =
-  sendRaw ws_ $ encode $ encodeDispatch (messageHeader mty_proxy) m
+  sendRaw ws_ $ encodeBS $ encodeDispatch (messageHeader mty_proxy) m
 
 apiMessage :: ( Message mTy , M mTy ~ msg , ToJSON msg , (mTy ∈ msgs) ~ 'True )
            => FullAPI msgs rqs

@@ -23,6 +23,7 @@ module Pure.WebSocket
     responding,
     responding',
     respondWith,
+    respondWithRaw,
     Awaiting,
     awaiting,
     awaiting',
@@ -238,6 +239,16 @@ respondWith :: ( Request rqTy
                , ToJSON response
                ) => (request -> IO response) -> RequestHandler rqTy
 respondWith f = responding $ acquire >>= liftIO . f >>= reply
+
+respondWithRaw :: ( Request rqTy
+                  , Req rqTy ~ (Int,request)
+                  , Identify (Req rqTy)
+                  , I (Req rqTy) ~ Int
+                  , FromJSON request
+                  , Rsp rqTy ~ response
+                  , ToJSON response
+                  ) => (request -> IO ResponseString) -> RequestHandler rqTy
+respondWithRaw f = responding $ acquire >>= liftIO . f >>= replyRaw
 
 newtype Awaiting message a = Awaiting { unAwaiting :: ReaderT (message,IO ()) IO a }
     deriving (Functor,Applicative,Monad,Alternative,MonadFail,MonadFix,MonadPlus)

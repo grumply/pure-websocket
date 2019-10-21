@@ -136,9 +136,13 @@ newWS :: String -> Int -> Bool -> IO WebSocket
 newWS host port secure = do
   -- TODO: make the delay method configurable.
   ws <- websocket
+  activate ws host port secure
+  pure ws
+
+activate :: WebSocket -> String -> Int -> Bool -> IO ()
+activate ws host port secure = do
   delayFactor_ <- newIORef 6
   connectWithExponentialBackoff ws delayFactor_
-  return ws
   where
     connectWithExponentialBackoff ws_ df_ = do
 

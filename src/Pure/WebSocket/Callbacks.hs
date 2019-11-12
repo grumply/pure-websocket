@@ -1,6 +1,7 @@
 module Pure.WebSocket.Callbacks where
 
 -- from base
+import Control.Exception
 import Data.IORef
 
 -- from pure-lifted
@@ -10,6 +11,9 @@ import Pure.Data.Lifted
 import Pure.WebSocket.Dispatch
 
 data CloseReason = MessageLengthExceeded | InvalidMessage | UnexpectedClosure
+  deriving (Show)
+
+instance Exception CloseReason
 
 data Status = Unopened | Closed CloseReason | Opened | Errored JSV | Connecting
 

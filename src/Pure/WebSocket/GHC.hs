@@ -95,12 +95,17 @@ import qualified Data.HashMap.Strict as Map
 data WebSocket_
   = WebSocket
     { wsSocket            :: Maybe (S.SockAddr,S.Socket,WS.Connection,WS.Stream)
-    , wsReceivers         :: [ThreadId]
     , wsDispatchCallbacks :: !(Map.HashMap Txt [IORef (Dispatch -> IO ())])
     , wsStatus            :: Status
     , wsStatusCallbacks   :: ![IORef (Status -> IO ())]
-    , wsBytesReadLimits   :: IORef (Int64,Int64)
+    , wsStreamReader      :: StreamReader
+    , wsStreamWriter      :: StreamWriter
+    , wsConnectionOptions :: WS.ConnectionOptions
+    , wsReceivers         :: [ThreadId]
     }
+
+type StreamReader = Streams.InputStream B.ByteString -> IO (Either E.SomeException B.ByteString)
+type StreamWriter = Streams.OutputStream B.ByteString -> Maybe BSL.ByteString -> IO (Maybe E.SomeException)
 
 type WebSocket = IORef WebSocket_
 
@@ -112,9 +117,13 @@ type RequestCallback request response = IO () -> Either Dispatch (Either LazyByt
 onStatus :: WebSocket -> (Status -> IO ()) -> IO StatusCallback
 onStatus ws_ f = do
   cb <- newIORef f
-  atomicModifyIORef' ws_ $ \ws -> (ws { wsStatusCallbacks = wsStatusCallbacks ws ++ [cb] },())
+  modifyIORef' ws_ $ \ws -> ws
+    { wsStatusCallbacks = wsStatusCallbacks ws ++ [cb]
+    }
   return $ StatusCallback cb $
-    atomicModifyIORef' ws_ $ \ws -> (ws { wsStatusCallbacks = List.filter (/= cb) (wsStatusCallbacks ws) },())
+    modifyIORef' ws_ $ \ws -> ws
+      { wsStatusCallbacks = List.filter (/= cb) (wsStatusCallbacks ws)
+      }
 
 -- | Set status and call status callbacks.
 setStatus :: WebSocket -> Status  -> IO ()
@@ -132,75 +141,73 @@ onDispatch ws_ hdr f = do
   return $ DispatchCallback cb $
     atomicModifyIORef' ws_ $ \ws -> (ws { wsDispatchCallbacks = Map.adjust (List.filter (/= cb)) hdr (wsDispatchCallbacks ws) },())
 
+defaultStreamReader :: StreamReader
+defaultStreamReader = \i ->
+  E.handle (return . Left)
+    (maybe (Left (toException UnexpectedClosure)) Right <$> Streams.read i)
+
+defaultStreamWriter :: StreamWriter
+defaultStreamWriter = \o bs ->
+  E.handle (return . Just)
+    (Streams.write (fmap BL.toStrict bs) o *> pure Nothing)
+
 -- | Initialize a websocket without connecting.
 websocket :: IO WebSocket
 websocket = do
-  brl <- newIORef (8 * 1024 * 1024, 8 * 1024 * 1024) -- 2 Mib
   newIORef WebSocket
     { wsSocket            = Nothing
-    , wsReceivers         = []
     , wsDispatchCallbacks = Map.empty
     , wsStatus            = Unopened
     , wsStatusCallbacks   = []
-    , wsBytesReadLimits   = brl
+    , wsStreamReader      = defaultStreamReader
+    , wsStreamWriter      = defaultStreamWriter
+    , wsConnectionOptions = WS.defaultConnectionOptions
+    , wsReceivers         = []
     }
 
-makeExhaustible :: IORef (Int64,Int64)
-                -> WebSocket
-                -> S.Socket
-                -> (Streams.InputStream B.ByteString,Streams.OutputStream B.ByteString)
-                -> IO WS.Stream
-makeExhaustible readCount ws_ sock (i,o) = do
+makeStream :: WebSocket -> S.Socket -> (Streams.InputStream B.ByteString,Streams.OutputStream B.ByteString) -> IO WS.Stream
+makeStream ws_ sock (i,o) = do
   sa <- S.getPeerName sock
-  i' <- limit sa i
-  stream <- WS.makeStream
-    (Streams.read i' `E.catch` \(_ :: SomeException) -> return Nothing)
-    (\b -> Streams.write (BL.toStrict <$> b) o `E.catch` \(_ :: SomeException) -> return ())
-  return stream
+  WS.makeStream reader' writer'
   where
+    reader' = do
+      rd <- wsStreamReader <$> readIORef ws_
+      r <- rd i
+      case r of
+        Left e
+          | Just e <- fromException e -> close ws_ e >> pure Nothing
+          | otherwise                 -> close ws_ UnexpectedClosure >> pure Nothing
+        Right bs ->
+          pure (Just bs)
 
-    {-# INLINE limit #-}
-    limit sa i = return $! Streams.InputStream prod pb
-      where
+    writer' mbs = do
+      wrt <- wsStreamWriter <$> readIORef ws_
+      me <- wrt o mbs
+      case me of
+        Just se
+          | Just e <- fromException se -> close ws_ e
+          | otherwise                  -> close ws_ UnexpectedClosure
+        Nothing ->
+          pure ()
 
-        {-# INLINE prod #-}
-        prod = (>>=) (Streams.read i) $ maybe (return Nothing) $ \x -> do
-          (count,kill) <- atomicModifyIORef' readCount $ \(remaining,total) ->
-            let !remaining' = remaining - fromIntegral (B.length x)
-                !res = if remaining' < 0 then ((0,total),(total,True)) else ((remaining',total),(total,False))
-            in res
-          when kill $ close ws_ MessageLengthExceeded
-          return (Just x)
-
-        {-# INLINE pb #-}
-        pb s = do
-          atomicModifyIORef' readCount $ \(remaining,total) ->
-            let !remaining' = remaining + fromIntegral (B.length s)
-            in ((remaining',total),())
-          Streams.unRead s i
-
--- Construct a server websocket from an open socket.
+-- Construct a default server with unlimited reader, writer, and default websocket options without deflate.
 serverWS :: S.Socket -> IO WebSocket
-serverWS sock = do
+serverWS = serverWSWith defaultStreamReader defaultStreamWriter WS.defaultConnectionOptions
+
+-- Construct a server websocket from an open socket with reader, writer, and websocket options.
+serverWSWith :: StreamReader -> StreamWriter -> WS.ConnectionOptions -> S.Socket -> IO WebSocket
+serverWSWith reader writer options sock = do
   sa <- S.getSocketName sock
   ws_ <- websocket
-
-  brr <- wsBytesReadLimits <$> readIORef ws_
-  writeIORef brr (maxBound,maxBound)
-
+  modifyIORef' ws_ $ \ws -> ws
+    { wsStreamReader = reader
+    , wsStreamWriter = writer
+    , wsConnectionOptions = options
+    }
   streams <- Streams.socketToStreams sock
-
-  wsStream <- makeExhaustible brr ws_ sock streams
-
-  pc <- WS.makePendingConnectionFromStream
-          wsStream
-          WS.defaultConnectionOptions
-            -- { WS.connectionStrictUnicode = True
-            -- , WS.connectionCompressionOptions = WS.PermessageDeflateCompression WS.defaultPermessageDeflate
-            -- }
-
+  wsStream <- makeStream ws_ sock streams
+  pc <- WS.makePendingConnectionFromStream wsStream options
   c <- WS.acceptRequest pc
-
   modifyIORef' ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsStatus = Opened }
   return ws_
 
@@ -208,14 +215,21 @@ activate :: WebSocket -> IO ()
 activate ws_ = do
   ws <- readIORef ws_
   let Just (_,sock,c,_) = wsSocket ws
-      brr = wsBytesReadLimits ws
-  rt <- forkIO $ receiveLoop sock ws_ brr c
+  rt <- forkIO $ receiveLoop sock ws_ c
   modifyIORef' ws_ $ \ws -> ws { wsReceivers = rt : wsReceivers ws }
 
 clientWS :: String -> Int -> IO WebSocket
-clientWS host port = do
+clientWS = clientWSWith defaultStreamReader defaultStreamWriter WS.defaultConnectionOptions
+
+clientWSWith :: StreamReader -> StreamWriter -> WS.ConnectionOptions -> String -> Int -> IO WebSocket
+clientWSWith reader writer options host port = do
   -- TODO: make the backoff method configurable
   ws <- websocket
+  modifyIORef' ws $ \ws -> ws
+    { wsStreamReader = reader
+    , wsStreamWriter = writer
+    , wsConnectionOptions = options
+    }
   connectWithExponentialBackoff ws 5
   return ws
   where
@@ -235,42 +249,54 @@ clientWS host port = do
           sa <- S.getPeerName sock
           streams <- Streams.socketToStreams sock
           ws <- readIORef ws_
-          wsStream <- makeExhaustible (wsBytesReadLimits ws) ws_ sock streams
-          c <- WS.runClientWithStream wsStream host "/" WS.defaultConnectionOptions [] return
+          wsStream <- makeStream ws_ sock streams
+          c <- WS.runClientWithStream wsStream host "/" (wsConnectionOptions ws) [] return
           ws <- readIORef ws_
           _ <- onStatus ws_ $ \status ->
             case status of
               Closed _ -> connectWithExponentialBackoff ws_ 5
               _        -> return ()
-          rt <- forkIO $ receiveLoop sock ws_ (wsBytesReadLimits ws) c
-          modifyIORef ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsReceivers = rt:wsReceivers ws }
+          rt <- forkIO $ receiveLoop sock ws_ c
+          modifyIORef' ws_ $ \ws -> ws
+            { wsSocket = Just (sa,sock,c,wsStream)
+            , wsReceivers = rt:wsReceivers ws
+            }
           setStatus ws_ Opened
 
 #ifdef SECURE
 serverWSS :: S.Socket -> SSL -> IO WebSocket
-serverWSS sock ssl = do
+serverWSS sock ssl = serverWSSWith defaultStreamReader defaultStreamWriter WS.defaultConnectionOptions
+
+serverWSSWith :: StreamReader -> StreamWriter -> WS.ConnectionOptions -> S.Socket -> SSL -> IO WebSocket
+serverWSSWith reader writer options sock ssl = do
   sa <- S.getSocketName sock
   ws_ <- websocket
-
-  brr <- wsBytesReadLimits <$> readIORef ws_
-  writeIORef brr (2 * 1024 * 1024,2 * 1024 * 1024) -- 2Mib
-
+  modifyIORef' ws_ $ \ws -> ws
+    { wsStreamReader = reader
+    , wsStreamWriter = writer
+    , wsConnectionOptions = options
+    }
   streams <- Streams.sslToStreams ssl
-
-  wsStream <- makeExhaustible brr ws_ sock streams
-
-  pc <- WS.makePendingConnectionFromStream
-          wsStream
-          WS.defaultConnectionOptions
-
+  wsStream <- makeStream ws_ sock streams
+  pc <- WS.makePendingConnectionFromStream wsStream options
   c <- WS.acceptRequest pc
-
-  modifyIORef' ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsStatus = Opened }
+  modifyIORef' ws_ $ \ws -> ws
+    { wsSocket = Just (sa,sock,c,wsStream)
+    , wsStatus = Opened
+    }
   return ws_
 
 clientWSS :: String -> Int -> IO WebSocket
-clientWSS host port = do
+clientWSS = clientWSSWith defaultStreamReader defaultStreamWriter WS.defaultConnectionOptions
+
+clientWSSWith :: StreamReader -> StreamWriter -> WS.ConnectionOptions -> String -> Int -> IO WebSocket
+clientWSSWith reader writer options host port = do
   ws <- websocket
+  modifyIORef' ws $ \ws -> ws
+    { wsStreamReader = reader
+    , wsStreamWriter = writer
+    , wsConnectionOptions = options
+    }
   connectWithExponentialBackoff ws 0
   return ws
   where
@@ -288,17 +314,20 @@ clientWSS host port = do
             connectWithExponentialBackoff ws_ (min (n + 1) 12) -- ~ 200 second max interval; average max interval 100 seconds
         Just sock -> do
           sa <- S.getPeerName sock
-          ssl <- liftIO $ sslConnect sock
-          streams <- liftIO $ Streams.sslToStreams ssl
+          ssl <- sslConnect sock
+          streams <- Streams.sslToStreams ssl
           ws <- readIORef ws_
-          wsStream <- makeExhaustible (wsBytesReadLimits ws) ws_ sock streams
-          c <- WS.runClientWithStream wsStream host path WS.defaultConnectionOptions [] return
+          wsStream <- makeStream ws_ sock streams
+          c <- WS.runClientWithStream wsStream host path (wsConnectionOptions ws) [] return
           _ <- onStatus ws_ $ \status ->
             case status of
               Closed _ -> connectWithExponentialBackoff ws_ 0
               _        -> return ()
-          rt <- forkIO $ receiveLoop sock ws wsBytesReadRef c
-          modifyIORef ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsReceiveThread = Just rt }
+          rt <- forkIO $ receiveLoop sock ws c
+          modifyIORef' ws_ $ \ws -> ws
+            { wsSocket = Just (sa,sock,c,wsStream)
+            , wsReceivers = rt : wsReceivers ws
+            }
           setStatus ws_ Opened
 #endif
 
@@ -308,11 +337,12 @@ close ws_ cr = do
   forM_ (wsSocket ws) $ \(sa,sock,c,s) -> do
     S.close sock
     WS.close s
-    writeIORef ws_ ws { wsSocket = Nothing }
+    writeIORef ws_ ws
+      { wsSocket = Nothing }
   setStatus ws_ (Closed cr)
   for_ (wsReceivers ws) killThread
 
-receiveLoop sock ws_ brr_ c = go
+receiveLoop sock ws_ c = go
   where
     go = do
       eem0 <- E.handle (\(_ :: WS.ConnectionException) -> return (Left (Closed InvalidMessage))) $
@@ -348,8 +378,6 @@ receiveLoop sock ws_ brr_ c = go
           Prelude.putStrLn "Websocket is closed; receiveloop failed."
 #endif
           close ws_ cr
-
-resetBytesReadRef brr_ = atomicModifyIORef' brr_ $ \(_,tot) -> ((tot,tot),())
 
 newListenSocket :: String -> Int -> IO S.Socket
 newListenSocket hn p = WS.makeListenSocket hn p

@@ -11,7 +11,7 @@
 }:
 mkDerivation {
   pname = "pure-websocket";
-  version = "0.7.0.0";
+  version = "0.8.0.0";
   src = ./.;
   libraryHaskellDepends = [
     base bytestring text unordered-containers pure-lifted pure-txt pure-json mtl pure-time

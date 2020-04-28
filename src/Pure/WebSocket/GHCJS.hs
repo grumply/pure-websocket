@@ -139,6 +139,9 @@ newWS host port secure = do
   activate ws host port secure
   pure ws
 
+activateGHCJS :: WebSocket -> String -> Int -> Bool -> IO ()
+activateGHCJS = activate
+
 activate :: WebSocket -> String -> Int -> Bool -> IO ()
 activate ws host port secure = do
   delayFactor_ <- newIORef 6

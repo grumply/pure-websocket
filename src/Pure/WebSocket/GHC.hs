@@ -218,6 +218,9 @@ activate ws_ = do
   rt <- forkIO $ receiveLoop sock ws_ c
   modifyIORef' ws_ $ \ws -> ws { wsReceivers = rt : wsReceivers ws }
 
+activateGHCJS :: WebSocket -> String -> Int -> Bool -> IO ()
+activateGHCJS ws _ _ _ = activate ws
+
 clientWS :: String -> Int -> IO WebSocket
 clientWS = clientWSWith defaultStreamReader defaultStreamWriter WS.defaultConnectionOptions
 

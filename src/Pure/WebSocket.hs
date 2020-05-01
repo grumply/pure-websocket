@@ -1,7 +1,7 @@
 {-# LANGUAGE CPP, FlexibleContexts, RankNTypes, TypeApplications, LambdaCase,
              TypeOperators, ScopedTypeVariables, GADTs, DataKinds,
              FlexibleInstances, MultiParamTypeClasses, FunctionalDependencies,
-             GeneralizedNewtypeDeriving
+             GeneralizedNewtypeDeriving, TypeApplications, RecordWildCards
   #-}
 #ifdef USE_TEMPLATE_HASKELL
 {-# LANGUAGE TemplateHaskell #-}
@@ -30,7 +30,7 @@ module Pure.WebSocket
     module Export
   ) where
 
-import Pure.Data.JSON (ToJSON,FromJSON,logJSON)
+import Pure.Data.JSON (ToJSON,FromJSON,fromJSON,Result(..),logJSON)
 import Pure.Data.Txt (Txt)
 import Pure.Data.Time (time)
 
@@ -124,7 +124,8 @@ remote api ws p rq f = do
 -- This works with the type of requests produced by `mkRequest`
 -- and conveniently prints the time the request took as well as
 -- the request data and the response date.
-remoteDebug :: ( Request rqTy
+remoteDebug :: forall msgs rqTy request response rqs.
+               ( Request rqTy
                , Req rqTy ~ (Int,request)
                , ToJSON request
                , ToJSON response
@@ -145,8 +146,13 @@ remoteDebug api ws p rq f = do
     logJSON ("sending",u,rq)
     Export.apiRequest api ws p (u,rq) $ \_ rsp -> do
       e <- time
-      logJSON ("received",u,rsp,e - s)
-      traverse_ f rsp
+      case rsp of
+        Left Dispatch {..} -> 
+          case fromJSON pl of 
+            Error err -> logJSON ("message parse failure",u,rsp,err,e - s)
+            Success (a :: response) -> error "Invariant broken; twice parsed, once successful"
+        Right r ->
+          f r
 
 notify :: ( Message msgTy
           , M msgTy ~ message

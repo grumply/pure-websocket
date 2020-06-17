@@ -109,7 +109,7 @@ remote :: ( Request rqTy
           , FromJSON response
           , (rqTy Export.∈ rqs) ~ 'True
           )
-       => FullAPI msgs rqs
+       => API msgs rqs
        -> WebSocket
        -> Proxy rqTy
        -> request
@@ -133,7 +133,7 @@ remoteDebug :: forall msgs rqTy request response rqs.
                , FromJSON response
                , (rqTy Export.∈ rqs) ~ 'True
                )
-            => FullAPI msgs rqs
+            => API msgs rqs
             -> Export.WebSocket
             -> Proxy rqTy
             -> request
@@ -159,7 +159,7 @@ notify :: ( Message msgTy
           , ToJSON message
           , (msgTy Export.∈ msgs) ~ 'True
           )
-       => FullAPI msgs rqs
+       => API msgs rqs
        -> WebSocket
        -> Proxy msgTy
        -> message

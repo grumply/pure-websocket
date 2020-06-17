@@ -21,110 +21,107 @@ import Pure.WebSocket.Message
 import Pure.WebSocket.Request
 import Pure.WebSocket.API.ProxyList
 
-data API (f :: k -> Constraint) (es :: [k])
+data Interface (f :: k -> Constraint) (es :: [k])
   where
-    APINull
-      :: API f '[]
+    InterfaceNull
+      :: Interface f '[]
 
-    APICons
+    InterfaceCons
       :: f e
       => Proxy e
-      -> API f es
-      -> API f (e ': es)
+      -> Interface f es
+      -> Interface f (e ': es)
 
 class (Removed es e ~ es')
     => DeleteEndpoint f e es es'
   where
-    deleteEndpoint :: Proxy e -> API f es -> API f es'
+    deleteEndpoint :: Proxy e -> Interface f es -> Interface f es'
 
 instance (Removed (e ': es) e ~ es)
     => DeleteEndpoint f e (e ': es) es
   where
-    deleteEndpoint _ (APICons _ mapi) = mapi
+    deleteEndpoint _ (InterfaceCons _ mapi) = mapi
 
 instance ( Removed es e ~ es'
          , DeleteEndpoint f e es es'
          , Removed (x ': es) e ~ es''
          , es'' ~ (x ': es')
          ) => DeleteEndpoint f e (x ': es) es'' where
-  deleteEndpoint p (APICons mh mapi) =
-    APICons mh (deleteEndpoint p mapi)
+  deleteEndpoint p (InterfaceCons mh mapi) =
+    InterfaceCons mh (deleteEndpoint p mapi)
 
 instance ( Appended (x ': xs) (y ': ys) ~ zs
          , Appended (x ': xs) (y ': ys) ~ (xy ': xys)
-         , TListAppend (API f) xs (y ': ys) xys
+         , TListAppend (Interface f) xs (y ': ys) xys
          )
-    => TListAppend (API f) (x ': xs) (y ': ys) zs
+    => TListAppend (Interface f) (x ': xs) (y ': ys) zs
   where
-    (<+++>) (APICons x xs) ys = APICons x (xs <+++> ys)
+    (<+++>) (InterfaceCons x xs) ys = InterfaceCons x (xs <+++> ys)
 
-type MessageAPI = API Message
-type RequestAPI = API Request
+class ToInterface f es where
+  toInterface :: PList es -> Interface f es
 
-class ToAPI f es where
-  toAPI :: PList es -> API f es
+instance ToInterface Request '[] where
+  toInterface _ = InterfaceNull
 
-instance ToAPI Request '[] where
-  toAPI _ = APINull
+instance ToInterface Message '[] where
+  toInterface _ = InterfaceNull
 
-instance ToAPI Message '[] where
-  toAPI _ = APINull
+instance (Message x, ToInterface Message xs) => ToInterface Message (x ': xs) where
+  toInterface (PCons p ps) = InterfaceCons p (toInterface ps)
 
-instance (Message x, ToAPI Message xs) => ToAPI Message (x ': xs) where
-  toAPI (PCons p ps) = APICons p (toAPI ps)
+instance (Request x, ToInterface Request xs) => ToInterface Request (x ': xs) where
+  toInterface (PCons p ps) = InterfaceCons p (toInterface ps)
 
-instance (Request x, ToAPI Request xs) => ToAPI Request (x ': xs) where
-  toAPI (PCons p ps) = APICons p (toAPI ps)
+class FromInterface f es where
+  fromInterface :: Interface f es -> PList es
 
-class FromAPI f es where
-  fromAPI :: API f es -> PList es
+instance FromInterface Request '[] where
+  fromInterface _ = PNull
 
-instance FromAPI Request '[] where
-  fromAPI _ = PNull
+instance FromInterface Message '[] where
+  fromInterface _ = PNull
 
-instance FromAPI Message '[] where
-  fromAPI _ = PNull
+instance (Message x, FromInterface Message xs) => FromInterface Message (x ': xs) where
+  fromInterface (InterfaceCons p ps) = PCons p (fromInterface ps)
 
-instance (Message x, FromAPI Message xs) => FromAPI Message (x ': xs) where
-  fromAPI (APICons p ps) = PCons p (fromAPI ps)
+instance (Request x, FromInterface Request xs) => FromInterface Request (x ': xs) where
+  fromInterface (InterfaceCons p ps) = PCons p (fromInterface ps)
 
-instance (Request x, FromAPI Request xs) => FromAPI Request (x ': xs) where
-  fromAPI (APICons p ps) = PCons p (fromAPI ps)
-
-data FullAPI messages requests
-  = API { messageAPI :: MessageAPI messages
-        , requestAPI :: RequestAPI requests
+data API messages requests
+  = API { messages :: Interface Message messages
+        , requests :: Interface Request requests
         }
 
-class DeriveMessageAPI msgs where
-  deriveMessageAPI :: PList msgs
-instance DeriveMessageAPI '[] where
-  deriveMessageAPI = PNull
-instance (Message x, DeriveMessageAPI xs) => DeriveMessageAPI (x ': xs) where
-  deriveMessageAPI = PCons (Proxy :: Proxy x) deriveMessageAPI
+class DeriveMessageInterface msgs where
+  deriveMessageInterface :: PList msgs
+instance DeriveMessageInterface '[] where
+  deriveMessageInterface = PNull
+instance (Message x, DeriveMessageInterface xs) => DeriveMessageInterface (x ': xs) where
+  deriveMessageInterface = PCons (Proxy :: Proxy x) deriveMessageInterface
 
-class DeriveRequestAPI reqs where
-  deriveRequestAPI :: PList reqs
-instance DeriveRequestAPI '[] where
-  deriveRequestAPI = PNull
-instance (Request x, DeriveRequestAPI xs) => DeriveRequestAPI (x ': xs) where
-  deriveRequestAPI = PCons (Proxy :: Proxy x) deriveRequestAPI
+class DeriveRequestInterface reqs where
+  deriveRequestInterface :: PList reqs
+instance DeriveRequestInterface '[] where
+  deriveRequestInterface = PNull
+instance (Request x, DeriveRequestInterface xs) => DeriveRequestInterface (x ': xs) where
+  deriveRequestInterface = PCons (Proxy :: Proxy x) deriveRequestInterface
 
-deriveAPI :: (ToAPI Message msgs, ToAPI Request reqs, DeriveMessageAPI msgs, DeriveRequestAPI reqs) => FullAPI msgs reqs
-deriveAPI = api deriveMessageAPI deriveRequestAPI
+deriveAPI :: (ToInterface Message msgs, ToInterface Request reqs, DeriveMessageInterface msgs, DeriveRequestInterface reqs) => API msgs reqs
+deriveAPI = api deriveMessageInterface deriveRequestInterface
 
-api :: (ToAPI Message ms, ToAPI Request rs) => PList ms -> PList rs -> FullAPI ms rs
-api msgs reqs = API (toAPI msgs) (toAPI reqs)
+api :: (ToInterface Message ms, ToInterface Request rs) => PList ms -> PList rs -> API ms rs
+api msgs reqs = API (toInterface msgs) (toInterface reqs)
 
-(<:+:>) :: ( FromAPI Message ms
-           , FromAPI Message ms'
-           , FromAPI Request rs
-           , FromAPI Request rs'
+(<:+:>) :: ( FromInterface Message ms
+           , FromInterface Message ms'
+           , FromInterface Request rs
+           , FromInterface Request rs'
            , TListAppend PList ms ms' ms''
            , TListAppend PList rs rs' rs''
-           , ToAPI Message ms''
-           , ToAPI Request rs''
+           , ToInterface Message ms''
+           , ToInterface Request rs''
            )
-        => FullAPI ms rs -> FullAPI ms' rs' -> FullAPI ms'' rs''
+        => API ms rs -> API ms' rs' -> API ms'' rs''
 (<:+:>) (API msl rsl) (API msr rsr) =
-  api (fromAPI msl <+++> fromAPI msr) (fromAPI rsl <+++> fromAPI rsr)
+  api (fromInterface msl <+++> fromInterface msr) (fromInterface rsl <+++> fromInterface rsr)

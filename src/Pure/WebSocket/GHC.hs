@@ -503,7 +503,7 @@ apiRequest :: ( Request rqTy
               , FromJSON response
               , (rqTy ∈ rqs) ~ 'True
               )
-           => FullAPI msgs rqs
+           => API msgs rqs
            -> WebSocket
            -> Proxy rqTy
            -> request
@@ -545,7 +545,7 @@ message ws_ mty_proxy m =
   sendRaw ws_ $ encodeBS $ encodeDispatch (messageHeader mty_proxy) m
 
 apiMessage :: ( Message mTy , M mTy ~ msg , ToJSON msg , (mTy ∈ msgs) ~ 'True )
-           => FullAPI msgs rqs
+           => API msgs rqs
            -> WebSocket
            -> Proxy mTy
            -> msg

@@ -336,7 +336,7 @@ apiRequest :: ( Request rqTy
               , FromJSON rsp
               , (rqTy ∈ rqs) ~ 'True
               )
-          => FullAPI msgs rqs
+          => API msgs rqs
           -> WebSocket
           -> Proxy rqTy
           -> request
@@ -377,7 +377,7 @@ message :: ( Message mTy , M mTy ~ msg , ToJSON msg)
 message ws_ mty_proxy = send ws_ (messageHeader mty_proxy)
 
 apiMessage :: ( Message mTy , M mTy ~ msg , ToJSON msg , (mTy ∈ msgs) ~ 'True)
-            => FullAPI msgs rqs
+            => API msgs rqs
             -> WebSocket
             -> Proxy mTy
             -> msg

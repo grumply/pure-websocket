@@ -25,29 +25,29 @@ import Pure.WebSocket.GHCJS
 import Pure.WebSocket.GHC
 #endif
 
-data ActiveEndpoints es
+data ActiveImplementation es
   where
-    ActiveEndpointsNull
-      :: ActiveEndpoints '[]
+    ActiveImplementationNull
+      :: ActiveImplementation '[]
 
-    ActiveEndpointsCons
+    ActiveImplementationCons
       :: Proxy e
       -> Endpoint a
-      -> ActiveEndpoints es
-      -> ActiveEndpoints (e ': es)
+      -> ActiveImplementation es
+      -> ActiveImplementation (e ': es)
 
-class EnactEndpoints api_ty hndlr es es' where
+class EnactImplementation api_ty hndlr es es' where
   -- we take api_ty's es to be our fixed basis
-  enactEndpoints :: WebSocket
+  enactImplementation :: WebSocket
                  -> api_ty es
-                 -> Endpoints hndlr es'
-                 -> IO (ActiveEndpoints es)
+                 -> Implementation hndlr es'
+                 -> IO (ActiveImplementation es)
 
-instance EnactEndpoints api_ty hndlr '[] '[] where
-  enactEndpoints _ _ _ = return ActiveEndpointsNull
+instance EnactImplementation api_ty hndlr '[] '[] where
+  enactImplementation _ _ _ = return ActiveImplementationNull
 
 data ActiveAPI messages requests =
-  ActiveAPI (ActiveEndpoints messages) (ActiveEndpoints requests)
+  ActiveAPI (ActiveImplementation messages) (ActiveImplementation requests)
 
 type family Equal a b :: Bool
   where
@@ -90,8 +90,6 @@ responds :: (Request rqTy, Req rqTy ~ request, Identify request, I request ~ rqI
          -> RequestHandler rqTy
 responds = RequestHandler
 
-type ReqHandlers rqs = Endpoints RequestHandler rqs
-
 data MessageHandler mTy
   where
     MessageHandler
@@ -124,79 +122,77 @@ accepts :: (Message mTy, M mTy ~ msg, FromJSON msg)
         -> MessageHandler mTy
 accepts = MessageHandler
 
-type MsgHandlers msgs = Endpoints MessageHandler msgs
-
 instance ( GetHandler MessageHandler message msgs'
          , Removed msgs' message ~ msgs''
          , DeleteHandler MessageHandler message msgs' msgs''
-         , EnactEndpoints MessageAPI MessageHandler msgs msgs''
+         , EnactImplementation (Interface Message) MessageHandler msgs msgs''
          , Message message
          , M message ~ msg
          , FromJSON msg
          )
-  => EnactEndpoints MessageAPI MessageHandler (message ': msgs) msgs' where
-  enactEndpoints ws_ (APICons pm ms) mhs = do
+  => EnactImplementation (Interface Message) MessageHandler (message ': msgs) msgs' where
+  enactImplementation ws_ (InterfaceCons pm ms) mhs = do
     case getHandler mhs :: MessageHandler message of
       MessageHandler _ f -> do
         let p = Proxy :: Proxy message
-            mhs' = deleteHandler p mhs :: MsgHandlers msgs''
+            mhs' = deleteHandler p mhs :: Implementation MessageHandler msgs''
         amh <- onMessage ws_ p f
-        ams <- enactEndpoints ws_ ms mhs'
-        return $ ActiveEndpointsCons pm (Endpoint (messageHeader p) amh) ams
+        ams <- enactImplementation ws_ ms mhs'
+        return $ ActiveImplementationCons pm (Endpoint (messageHeader p) amh) ams
 
 instance ( GetHandler RequestHandler request rqs'
          , Removed rqs' request ~ rqs''
          , DeleteHandler RequestHandler request rqs' rqs''
-         , EnactEndpoints RequestAPI RequestHandler rqs rqs''
+         , EnactImplementation (Interface Request) RequestHandler rqs rqs''
          , Request request
          , Req request ~ req
          , Rsp request ~ response
          , ToJSON req
          , FromJSON response
          )
-  => EnactEndpoints RequestAPI RequestHandler (request ': rqs) rqs' where
-  enactEndpoints ws_ (APICons pm ms) mhs =
+  => EnactImplementation (Interface Request) RequestHandler (request ': rqs) rqs' where
+  enactImplementation ws_ (InterfaceCons pm ms) mhs =
     case getHandler mhs :: RequestHandler request of
       RequestHandler _ f -> do
         let p = Proxy :: Proxy request
-            mhs' = deleteHandler p mhs :: ReqHandlers rqs''
+            mhs' = deleteHandler p mhs :: Implementation RequestHandler rqs''
         amh <- respond ws_ p f
-        ams <- enactEndpoints ws_ ms mhs'
-        return $ ActiveEndpointsCons pm (Endpoint (requestHeader p) amh) ams
+        ams <- enactImplementation ws_ ms mhs'
+        return $ ActiveImplementationCons pm (Endpoint (requestHeader p) amh) ams
 
-data Implementation msgs rqs msgs' rqs'
+data Endpoints msgs rqs msgs' rqs'
   where
-    Impl
-      :: ( EnactEndpoints MessageAPI MessageHandler msgs msgs'
-         , EnactEndpoints RequestAPI RequestHandler rqs rqs'
+    Endpoints
+      :: ( EnactImplementation (Interface Message) MessageHandler msgs msgs'
+         , EnactImplementation (Interface Request) RequestHandler rqs rqs'
          )
-      => FullAPI msgs rqs
-      -> Endpoints MessageHandler msgs'
-      -> Endpoints RequestHandler rqs'
-      -> Implementation msgs rqs msgs' rqs'
+      => API msgs rqs
+      -> Implementation MessageHandler msgs'
+      -> Implementation RequestHandler rqs'
+      -> Endpoints msgs rqs msgs' rqs'
 
 -- | Given two distinct API implementations, combine them into one implementation.
 --
 -- The type is rather hairy. Note that `TListAppend` guarantees uniqueness.
 --
--- (<++++>) :: (TListAppend (Endpoints RequestHandler c) rqsl' rqsr' rqs'
---             ,TListAppend (Endpoints MessageHandler c) msgsl' msgsr' msgs'
+-- (<++++>) :: (TListAppend (Implementation RequestHandler c) rqsl' rqsr' rqs'
+--             ,TListAppend (Implementation MessageHandler c) msgsl' msgsr' msgs'
 --             ,TListAppend (API Request) rqsl rqsr rqs
 --             ,TListAppend (API Message) msgsl msgsr msgs
---             ,EnactEndpoints RequestAPI RequestHandler rqs rqs'
---             ,EnactEndpoints MessageAPI MessageHandler msgs msgs'
+--             ,EnactImplementation (Interface Request) RequestHandler rqs rqs'
+--             ,EnactImplementation (Interface Message) MessageHandler msgs msgs'
 --             )
 --          => Implementation msgsl rqsl msgsl' rqsl'
 --          -> Implementation msgsr rqsr msgsr' rqsr'
 --          -> Implementation msgs rqs msgs' rqs'
-(Impl (API ml rl) eml erl) <++++> (Impl (API mr rr) emr err) =
-  Impl (API (ml <+++> mr) (rl <+++> rr)) (eml <+++> emr) (erl <+++> err)
+(Endpoints (API ml rl) eml erl) <++++> (Endpoints (API mr rr) emr err) =
+  Endpoints (API (ml <+++> mr) (rl <+++> rr)) (eml <+++> emr) (erl <+++> err)
 
 -- | Given an Implementation of an API, execute the implementation and return a corresponding ActiveAPI.
-enact :: WebSocket -> Implementation msgs rqs msgs' rqs' -> IO (ActiveAPI msgs rqs)
-enact ws_ (Impl local mhs rhs) = do
+enact :: WebSocket -> Endpoints msgs rqs msgs' rqs' -> IO (ActiveAPI msgs rqs)
+enact ws_ (Endpoints local mhs rhs) = do
   let API mapi rapi = local
-  amapi <- enactEndpoints ws_ mapi mhs
-  arapi <- enactEndpoints ws_ rapi rhs
+  amapi <- enactImplementation ws_ mapi mhs
+  arapi <- enactImplementation ws_ rapi rhs
   let active = ActiveAPI amapi arapi
   return active

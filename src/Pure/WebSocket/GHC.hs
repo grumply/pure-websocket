@@ -73,14 +73,12 @@ import qualified Data.ByteString.Internal as S
 import qualified Data.ByteString.Unsafe as S
 import qualified Data.ByteString.Lazy as BSL hiding (putStrLn)
 
-#ifdef SECURE
 -- from HsOpenSSL
 import OpenSSL as SSL
 import OpenSSL.Session as SSL
 
 -- from openssl-streams
 import qualified System.IO.Streams.SSL as Streams
-#endif
 
 -- from io-streams
 import qualified System.IO.Streams as Streams
@@ -266,9 +264,8 @@ clientWSWith reader writer options host port = do
             }
           setStatus ws_ Opened
 
-#ifdef SECURE
 serverWSS :: S.Socket -> SSL -> IO WebSocket
-serverWSS sock ssl = serverWSSWith defaultStreamReader defaultStreamWriter WS.defaultConnectionOptions
+serverWSS = serverWSSWith defaultStreamReader defaultStreamWriter WS.defaultConnectionOptions
 
 serverWSSWith :: StreamReader -> StreamWriter -> WS.ConnectionOptions -> S.Socket -> SSL -> IO WebSocket
 serverWSSWith reader writer options sock ssl = do
@@ -309,7 +306,7 @@ clientWSSWith reader writer options host port = do
       case msock of
         Nothing -> do
           setStatus ws_ Connecting
-          forkIO $ do
+          void $ forkIO $ do
             gen <- newStdGen
             let (r,_) = randomR (1,2 ^ n - 1) gen
                 i = interval * r
@@ -321,18 +318,17 @@ clientWSSWith reader writer options host port = do
           streams <- Streams.sslToStreams ssl
           ws <- readIORef ws_
           wsStream <- makeStream ws_ sock streams
-          c <- WS.runClientWithStream wsStream host path (wsConnectionOptions ws) [] return
+          c <- WS.runClientWithStream wsStream host "/" (wsConnectionOptions ws) [] return
           _ <- onStatus ws_ $ \status ->
             case status of
               Closed _ -> connectWithExponentialBackoff ws_ 0
               _        -> return ()
-          rt <- forkIO $ receiveLoop sock ws c
+          rt <- forkIO $ receiveLoop sock ws_ c
           modifyIORef' ws_ $ \ws -> ws
             { wsSocket = Just (sa,sock,c,wsStream)
             , wsReceivers = rt : wsReceivers ws
             }
           setStatus ws_ Opened
-#endif
 
 close :: WebSocket -> CloseReason -> IO ()
 close ws_ cr = do
@@ -385,7 +381,6 @@ receiveLoop sock ws_ c = go
 newListenSocket :: String -> Int -> IO S.Socket
 newListenSocket hn p = WS.makeListenSocket hn p
 
-#ifdef SECURE
 sslSetupServer keyFile certFile mayChainFile = do
   ctx <- SSL.context
   SSL.contextSetPrivateKeyFile ctx keyFile
@@ -395,18 +390,17 @@ sslSetupServer keyFile certFile mayChainFile = do
   SSL.contextSetVerificationMode ctx VerifyNone -- VerifyPeer?
   return ctx
 
-sslAccept conn = liftIO $ do
+sslAccept conn = do
   ctx <- SSL.context
   ssl <- SSL.connection ctx conn
   SSL.accept ssl
   return ssl
 
-sslConnect conn = liftIO $ do
+sslConnect conn = do
   ctx <- SSL.context
   ssl <- SSL.connection ctx conn
   SSL.connect ssl
   return ssl
-#endif
 
 newClientSocket host port = E.handle (\(_ :: IOException) -> return Nothing) $ do
   let hints = S.defaultHints

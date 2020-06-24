@@ -3,7 +3,6 @@
 , stdenv, template-haskell, text, mtl
 , unordered-containers
 , pure-txt, pure-json, pure-lifted, pure-time
-, secure ? false
 , debugws ? false
 , debugapi ? false
 , devel ? false
@@ -18,11 +17,10 @@ mkDerivation {
   ] ++ (if useTemplateHaskell then [ template-haskell ] else [])
     ++ (if ghc.isGhcjs or false then [ ghcjs-base ] else [
         io-streams network random websockets
-    ] ++ (if secure then [ HsOpenSSL openssl-streams ] else [])
+    ] ++ [ HsOpenSSL openssl-streams ] 
     );
   configureFlags =
-    [ (secure ? "-fsecure")
-      (debugws ? "-fdebugws")
+    [ (debugws ? "-fdebugws")
       (debugapi ? "-fdebugapi")
       (devel ? "-fdevel")
     ] ++ (if useTemplateHaskell then [] else [

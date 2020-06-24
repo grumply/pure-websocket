@@ -386,7 +386,7 @@ sslSetupServer keyFile certFile mayChainFile = do
   SSL.contextSetPrivateKeyFile ctx keyFile
   SSL.contextSetCertificateFile ctx certFile
   forM_ mayChainFile (SSL.contextSetCertificateChainFile ctx)
-  SSL.contextSetCiphers ctx "HIGH"
+  SSL.contextSetCiphers ctx "DEFAULT"
   SSL.contextSetVerificationMode ctx VerifyNone -- VerifyPeer?
   return ctx
 

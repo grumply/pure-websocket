@@ -268,7 +268,7 @@ serverWSS :: S.Socket -> SSL -> IO WebSocket
 serverWSS = serverWSSWith defaultStreamReader defaultStreamWriter WS.defaultConnectionOptions
 
 serverWSSWith :: StreamReader -> StreamWriter -> WS.ConnectionOptions -> S.Socket -> SSL -> IO WebSocket
-serverWSSWith reader writer options sock ssl = do
+serverWSSWith reader writer options sock ssl = SSL.withOpenSSL $ do
   sa <- S.getSocketName sock
   ws_ <- websocket
   modifyIORef' ws_ $ \ws -> ws
@@ -290,7 +290,7 @@ clientWSS :: String -> Int -> IO WebSocket
 clientWSS = clientWSSWith defaultStreamReader defaultStreamWriter WS.defaultConnectionOptions
 
 clientWSSWith :: StreamReader -> StreamWriter -> WS.ConnectionOptions -> String -> Int -> IO WebSocket
-clientWSSWith reader writer options host port = do
+clientWSSWith reader writer options host port = SSL.withOpenSSL $ do
   ws <- websocket
   modifyIORef' ws $ \ws -> ws
     { wsStreamReader = reader
@@ -381,12 +381,12 @@ receiveLoop sock ws_ c = go
 newListenSocket :: String -> Int -> IO S.Socket
 newListenSocket hn p = WS.makeListenSocket hn p
 
-sslSetupServer keyFile certFile mayChainFile = do
+sslSetupServer keyFile certFile mayChainFile = SSL.withOpenSSL $ do
   ctx <- SSL.context
   SSL.contextSetPrivateKeyFile ctx keyFile
   SSL.contextSetCertificateFile ctx certFile
   forM_ mayChainFile (SSL.contextSetCertificateChainFile ctx)
-  SSL.contextSetCiphers ctx "DEFAULT"
+  SSL.contextSetCiphers ctx "HIGH"
   SSL.contextSetVerificationMode ctx VerifyNone -- VerifyPeer?
   return ctx
 

@@ -9,6 +9,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE IncoherentInstances #-}
 module Pure.WebSocket.API.ProxyList where
 
 import Data.Proxy
@@ -137,6 +138,9 @@ class (Appended elems elems' ~ elems'')
     => TListAppend (f :: [k] -> *) (elems :: [k]) (elems' :: [k]) (elems'' :: [k])
   where
     (<+++>) :: f elems -> f elems' -> f elems''
+
+instance TListAppend f '[] '[] '[] where
+  (<+++>) _ r = r
 
 instance TListAppend f '[] es es where
   (<+++>) _ r = r

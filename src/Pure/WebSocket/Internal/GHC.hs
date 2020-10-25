@@ -15,7 +15,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveAnyClass #-}
-module Pure.WebSocket.GHC (module Pure.WebSocket.GHC, S.SockAddr, S.Socket, WS.makeListenSocket, S.accept) where
+module Pure.WebSocket.Internal.GHC (module Pure.WebSocket.Internal.GHC, S.SockAddr, S.Socket, WS.makeListenSocket, S.accept) where
 
 -- from pure-json
 import Pure.Data.JSON as AE

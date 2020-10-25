@@ -22,7 +22,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE LambdaCase #-}
-module Pure.WebSocket.GHCJS where
+module Pure.WebSocket.Internal.GHCJS where
 
 -- from pure-json
 import Pure.Data.JSON as AE

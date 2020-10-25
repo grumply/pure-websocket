@@ -1,21 +1,15 @@
 {-# LANGUAGE CPP, FlexibleContexts, RankNTypes, TypeApplications, LambdaCase,
              TypeOperators, ScopedTypeVariables, GADTs, DataKinds,
              FlexibleInstances, MultiParamTypeClasses, FunctionalDependencies,
-             GeneralizedNewtypeDeriving, TypeApplications, RecordWildCards
+             GeneralizedNewtypeDeriving, TypeApplications, RecordWildCards, 
+             TemplateHaskell, ViewPatterns
   #-}
-#ifdef USE_TEMPLATE_HASKELL
-{-# LANGUAGE TemplateHaskell #-}
-#endif
-{-# LANGUAGE ViewPatterns #-}
 module Pure.WebSocket
-  (
-#ifdef USE_TEMPLATE_HASKELL
-    mkRequest,
+  ( mkRequest,
     mkMessage,
-#endif
-    remote,
-    remoteDebug,
-    notify,
+    request,
+    requestDebug,
+    message,
     Stop(..),
     Acquire(..),
     Reply(..),
@@ -34,17 +28,12 @@ import Pure.Data.JSON (ToJSON,FromJSON,fromJSON,Result(..),logJSON)
 import Pure.Data.Txt (Txt)
 import Pure.Data.Time (time)
 
-#ifdef __GHCJS__
-import Pure.WebSocket.GHCJS     as Export
-#else
-import Pure.WebSocket.GHC       as Export
-#endif
-
 import Pure.WebSocket.API       as Export
 import Pure.WebSocket.Callbacks as Export
 import Pure.WebSocket.Dispatch  as Export
 import Pure.WebSocket.Endpoint  as Export
 import Pure.WebSocket.Handlers  as Export
+import Pure.WebSocket.Internal  as Export hiding (request,message)
 import Pure.WebSocket.Identify  as Export
 import Pure.WebSocket.Message   as Export
 import Pure.WebSocket.Request   as Export
@@ -64,15 +53,12 @@ import Control.Monad.Trans
 import Control.Monad.Reader
 import Control.Monad.IO.Class as Export
 
-#ifdef USE_TEMPLATE_HASKELL
 import Language.Haskell.TH
 import Language.Haskell.TH.Lib
-#endif
 
 mapHead f [] = []
 mapHead f (x:xs) = f x : xs
 
-#ifdef USE_TEMPLATE_HASKELL
 processName str = (mkName str,mkName $ mapHead toLower str)
 
 mkRequest :: String -> TypeQ -> Q [Dec]
@@ -99,10 +85,9 @@ mkMessage (processName -> (dat,msg)) ty = do
       messageInstanceDec = InstanceD Nothing [] (ConT ''Message `AppT` ConT dat)
         [ TySynInstD ''M (TySynEqn [ ConT dat ] message) ]
   return [dataDec,proxyFunTy,proxyFunDec,messageInstanceDec]
-#endif
 
 -- This works with the type of requests produced by `mkRequest`
-remote :: ( Request rqTy
+request :: ( Request rqTy
           , Req rqTy ~ (Int,request)
           , ToJSON request
           , Rsp rqTy ~ response
@@ -115,7 +100,7 @@ remote :: ( Request rqTy
        -> request
        -> (response -> IO ())
        -> IO ()
-remote api ws p rq f = do
+request api ws p rq f = do
   u <- hashUnique <$> newUnique
   void $ forkIO $ void $ do
     Export.apiRequest api ws p (u,rq) $ \_ rsp -> do
@@ -123,8 +108,10 @@ remote api ws p rq f = do
 
 -- This works with the type of requests produced by `mkRequest`
 -- and conveniently prints the time the request took as well as
--- the request data and the response date.
-remoteDebug :: forall msgs rqTy request response rqs.
+-- the request and response data. Drop this in as a first step 
+-- in debugging a failed request; once in a while, the GHCJS 
+-- and GHC JSON instances are mis-aligned.
+requestDebug :: forall msgs rqTy request response rqs.
                ( Request rqTy
                , Req rqTy ~ (Int,request)
                , ToJSON request
@@ -139,7 +126,7 @@ remoteDebug :: forall msgs rqTy request response rqs.
             -> request
             -> (response -> IO ())
             -> IO ()
-remoteDebug api ws p rq f = do
+requestDebug api ws p rq f = do
   u   <- hashUnique <$> newUnique
   void $ forkIO $ void $ do
     s <- time
@@ -154,7 +141,7 @@ remoteDebug api ws p rq f = do
         Right r ->
           f r
 
-notify :: ( Message msgTy
+message :: ( Message msgTy
           , M msgTy ~ message
           , ToJSON message
           , (msgTy Export.∈ msgs) ~ 'True
@@ -164,7 +151,7 @@ notify :: ( Message msgTy
        -> Proxy msgTy
        -> message
        -> IO ()
-notify api ws p msg =
+message api ws p msg =
   void $ forkIO $ void $ Export.apiMessage api ws p msg
 
 type ResponseString =

@@ -13,39 +13,7 @@ source-repository head
   type: git
   location: https://github.com/grumply/pure-websocket.git
 
-Flag debugws
-     Description: debug websocket messages
-     Default: False
-     Manual: True
-
-Flag devel
-     Description: development debugging
-     Default: False
-     Manual: True
-
-Flag debugapi
-     Description: log failed parsing at api endpoints
-     Default: False
-     Manual: True
-
-Flag use-template-haskell
-     Description: enable template haskell for message/request derivation
-     Default: True
-     Manual: True
-
 library
-  if flag(debugws)
-    cpp-options: -DDEBUGWS
-
-  if flag(devel)
-    cpp-options: -DDEVEL
-
-  if flag(debugapi)
-    cpp-options: -DDEBUGAPI
-
-  if flag(use-template-haskell)
-    cpp-options: -DUSE_TEMPLATE_HASKELL
-
   exposed-modules:
       Pure.WebSocket.API.Implementation
     , Pure.WebSocket.API.Interface
@@ -55,12 +23,13 @@ library
     , Pure.WebSocket.Dispatch
     , Pure.WebSocket.Endpoint
     , Pure.WebSocket.Handlers
+    , Pure.WebSocket.Internal
     , Pure.WebSocket.Identify
     , Pure.WebSocket.Message
     , Pure.WebSocket.Request
     , Pure.WebSocket.TypeRep
     , Pure.WebSocket
-
+    
   build-depends:
     base,
     bytestring,
@@ -69,10 +38,8 @@ library
     pure-json,
     pure-time,
     mtl,
+    template-haskell,
     unordered-containers
-
-  if flag(use-template-haskell)
-    build-depends: template-haskell
 
   if (impl(ghcjs))
 
@@ -80,7 +47,7 @@ library
       ghcjs-base
 
     other-modules:
-      Pure.WebSocket.GHCJS
+      Pure.WebSocket.Internal.GHCJS
 
   else
 
@@ -94,7 +61,7 @@ library
       , openssl-streams >= 1.2      && < 1.5
 
     other-modules:
-      Pure.WebSocket.GHC
+      Pure.WebSocket.Internal.GHC
 
 
   hs-source-dirs:      src

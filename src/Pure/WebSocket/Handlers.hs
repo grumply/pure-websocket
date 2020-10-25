@@ -19,11 +19,7 @@ import Pure.WebSocket.Endpoint
 import Pure.WebSocket.Identify
 import Pure.WebSocket.Message
 import Pure.WebSocket.Request
-#ifdef __GHCJS__
-import Pure.WebSocket.GHCJS
-#else
-import Pure.WebSocket.GHC
-#endif
+import Pure.WebSocket.Internal
 
 data ActiveImplementation es
   where

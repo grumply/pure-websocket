@@ -195,7 +195,7 @@ serverWS = serverWSWith defaultStreamReader defaultStreamWriter WS.defaultConnec
 -- Construct a server websocket from an open socket with reader, writer, and websocket options.
 serverWSWith :: StreamReader -> StreamWriter -> WS.ConnectionOptions -> S.Socket -> IO WebSocket
 serverWSWith reader writer options sock = do
-  sa <- S.getSocketName sock
+  sa <- S.getPeerName sock
   ws_ <- websocket
   modifyIORef' ws_ $ \ws -> ws
     { wsStreamReader = reader
@@ -269,7 +269,7 @@ serverWSS = serverWSSWith defaultStreamReader defaultStreamWriter WS.defaultConn
 
 serverWSSWith :: StreamReader -> StreamWriter -> WS.ConnectionOptions -> S.Socket -> SSL -> IO WebSocket
 serverWSSWith reader writer options sock ssl = SSL.withOpenSSL $ do
-  sa <- S.getSocketName sock
+  sa <- S.getPeerName sock
   ws_ <- websocket
   modifyIORef' ws_ $ \ws -> ws
     { wsStreamReader = reader

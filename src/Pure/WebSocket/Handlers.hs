@@ -192,3 +192,14 @@ enact ws_ (Endpoints local mhs rhs) = do
   arapi <- enactImplementation ws_ rapi rhs
   let active = ActiveAPI amapi arapi
   return active
+
+repeal :: ActiveAPI msgs rqs -> IO ()
+repeal (ActiveAPI mimpl rimpl) = do
+  deactivate mimpl 
+  deactivate rimpl
+  where
+    deactivate :: ActiveImplementation es -> IO ()
+    deactivate ActiveImplementationNull = pure ()
+    deactivate (ActiveImplementationCons _ ep rest) = do
+      dcCleanup (epDispatchCallback ep)
+      deactivate rest 

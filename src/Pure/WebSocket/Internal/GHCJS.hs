@@ -396,3 +396,32 @@ onMessage ws_ mty_proxy f = do
   dpc <- onDispatch ws_ header bhvr
   writeIORef s_ dpc
   return dpc
+
+instance ( Request request
+         , RemoveInterface WebSocket (Interface Request) rqs
+         )
+  => RemoveInterface WebSocket (Interface Request) (request ': rqs) where
+  removeInterface ws_ (InterfaceCons pm rest) = do
+    atomicModifyIORef' ws_ $ \ws -> 
+      let header = requestHeader (Proxy :: Proxy request) 
+      in (ws { wsDispatchCallbacks = Map.delete header (wsDispatchCallbacks ws) },())
+    removeInterface ws_ rest
+
+instance ( Message message
+         , RemoveInterface WebSocket (Interface Message) msgs
+         )
+  => RemoveInterface WebSocket (Interface Message) (message ': msgs) where
+  removeInterface ws_ (InterfaceCons pm rest) = do
+    atomicModifyIORef' ws_ $ \ws -> 
+      let header = messageHeader (Proxy :: Proxy message) 
+      in (ws { wsDispatchCallbacks = Map.delete header (wsDispatchCallbacks ws) },())
+    removeInterface ws_ rest
+
+remove :: 
+    ( RemoveInterface WebSocket (Interface Request) reqs
+    , RemoveInterface WebSocket (Interface Message) msgs
+    ) => WebSocket -> API msgs reqs -> IO ()
+remove ws_ (API mapi rapi) = do
+  removeInterface ws_ mapi
+  removeInterface ws_ rapi
+  

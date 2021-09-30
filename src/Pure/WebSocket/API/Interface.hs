@@ -50,6 +50,12 @@ instance ( Removed es e ~ es'
   deleteEndpoint p (InterfaceCons mh mapi) =
     InterfaceCons mh (deleteEndpoint p mapi)
 
+class RemoveInterface ws api_ty xs where
+  removeInterface :: ws -> api_ty xs -> IO ()
+
+instance RemoveInterface ws api_ty '[] where
+  removeInterface _ _ = pure ()
+
 instance ( Appended (x ': xs) (y ': ys) ~ zs
          , Appended (x ': xs) (y ': ys) ~ (xy ': xys)
          , TListAppend (Interface f) xs (y ': ys) xys

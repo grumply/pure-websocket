@@ -163,10 +163,8 @@ websocket = do
     , wsReceivers         = []
     }
 
-makeStream :: WebSocket -> S.Socket -> (Streams.InputStream B.ByteString,Streams.OutputStream B.ByteString) -> IO WS.Stream
-makeStream ws_ sock (i,o) = do
-  sa <- S.getPeerName sock
-  WS.makeStream reader' writer'
+makeStream :: WebSocket -> (Streams.InputStream B.ByteString,Streams.OutputStream B.ByteString) -> IO WS.Stream
+makeStream ws_ (i,o) = WS.makeStream reader' writer'
   where
     reader' = do
       rd <- wsStreamReader <$> readIORef ws_
@@ -203,7 +201,7 @@ serverWSWith reader writer options sock = do
     , wsConnectionOptions = options
     }
   streams <- Streams.socketToStreams sock
-  wsStream <- makeStream ws_ sock streams
+  wsStream <- makeStream ws_ streams
   pc <- WS.makePendingConnectionFromStream wsStream options
   c <- WS.acceptRequest pc
   modifyIORef' ws_ $ \ws -> ws { wsSocket = Just (sa,sock,c,wsStream), wsStatus = Opened }
@@ -213,7 +211,7 @@ activate :: WebSocket -> IO ()
 activate ws_ = do
   ws <- readIORef ws_
   let Just (_,sock,c,_) = wsSocket ws
-  rt <- forkIO $ receiveLoop sock ws_ c
+  rt <- forkIO $ receiveLoop ws_ c
   modifyIORef' ws_ $ \ws -> ws { wsReceivers = rt : wsReceivers ws }
 
 activateGHCJS :: WebSocket -> String -> Int -> Bool -> IO ()
@@ -250,14 +248,14 @@ clientWSWith reader writer options host port = do
           sa <- S.getPeerName sock
           streams <- Streams.socketToStreams sock
           ws <- readIORef ws_
-          wsStream <- makeStream ws_ sock streams
+          wsStream <- makeStream ws_ streams
           c <- WS.runClientWithStream wsStream host "/" (wsConnectionOptions ws) [] return
           ws <- readIORef ws_
           _ <- onStatus ws_ $ \status ->
             case status of
               Closed _ -> connectWithExponentialBackoff ws_ 5
               _        -> return ()
-          rt <- forkIO $ receiveLoop sock ws_ c
+          rt <- forkIO $ receiveLoop ws_ c
           modifyIORef' ws_ $ \ws -> ws
             { wsSocket = Just (sa,sock,c,wsStream)
             , wsReceivers = rt:wsReceivers ws
@@ -277,7 +275,7 @@ serverWSSWith reader writer options sock ssl = SSL.withOpenSSL $ do
     , wsConnectionOptions = options
     }
   streams <- Streams.sslToStreams ssl
-  wsStream <- makeStream ws_ sock streams
+  wsStream <- makeStream ws_ streams
   pc <- WS.makePendingConnectionFromStream wsStream options
   c <- WS.acceptRequest pc
   modifyIORef' ws_ $ \ws -> ws
@@ -317,13 +315,13 @@ clientWSSWith reader writer options host port = SSL.withOpenSSL $ do
           ssl <- sslConnect sock
           streams <- Streams.sslToStreams ssl
           ws <- readIORef ws_
-          wsStream <- makeStream ws_ sock streams
+          wsStream <- makeStream ws_ streams
           c <- WS.runClientWithStream wsStream host "/" (wsConnectionOptions ws) [] return
           _ <- onStatus ws_ $ \status ->
             case status of
               Closed _ -> connectWithExponentialBackoff ws_ 0
               _        -> return ()
-          rt <- forkIO $ receiveLoop sock ws_ c
+          rt <- forkIO $ receiveLoop ws_ c
           modifyIORef' ws_ $ \ws -> ws
             { wsSocket = Just (sa,sock,c,wsStream)
             , wsReceivers = rt : wsReceivers ws
@@ -341,7 +339,8 @@ close ws_ cr = do
   setStatus ws_ (Closed cr)
   for_ (wsReceivers ws) killThread
 
-receiveLoop sock ws_ c = go
+receiveLoop :: WebSocket -> WS.Connection -> IO ()
+receiveLoop ws_ c = go
   where
     go = do
       eem0 <- E.handle (\(_ :: WS.ConnectionException) -> return (Left (Closed InvalidMessage))) $

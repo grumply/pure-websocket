@@ -364,7 +364,7 @@ receiveLoop sock ws_ c = go
 #if defined(DEBUGWS) || defined(DEVEL)
                   Prelude.putStrLn $ "Unhandled message: " ++ show (encode m)
 #endif
-                  return ()
+                  go
                 Just cbs -> do
 #if defined(DEBUGWS) || defined(DEVEL)
                   Prelude.putStrLn $ "Dispatching message: " ++ show (encode m)

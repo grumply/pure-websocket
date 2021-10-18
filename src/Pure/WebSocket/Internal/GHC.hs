@@ -23,6 +23,9 @@ import Pure.Data.JSON as AE
 -- from pure-txt
 import Pure.Data.Txt (Txt,ToTxt(..),FromTxt(..))
 
+-- from pure-random-pcg
+import Pure.Random
+
 -- from pure-websocket (local)
 import Pure.WebSocket.API
 import Pure.WebSocket.Callbacks
@@ -50,9 +53,6 @@ import System.IO
 import System.IO.Unsafe
 import Text.Read hiding (get,lift)
 import Unsafe.Coerce
-
--- from random
-import System.Random
 
 -- from network
 import qualified Network.Socket as S
@@ -218,32 +218,39 @@ activateGHCJS :: WebSocket -> String -> Int -> Bool -> IO ()
 activateGHCJS ws _ _ _ = activate ws
 
 clientWS :: String -> Int -> IO WebSocket
-clientWS = clientWSWith defaultStreamReader defaultStreamWriter WS.defaultConnectionOptions
+clientWS = clientWSWith (defaultExponentialBackoffWithJitter 32000) defaultStreamReader defaultStreamWriter WS.defaultConnectionOptions
 
-clientWSWith :: StreamReader -> StreamWriter -> WS.ConnectionOptions -> String -> Int -> IO WebSocket
-clientWSWith reader writer options host port = do
-  -- TODO: make the backoff method configurable
+type FailedAttempts = Int
+type Milliseconds = Int
+type Backoff = Seed -> FailedAttempts -> IO Seed
+
+defaultExponentialBackoffWithJitter :: Milliseconds -> Backoff
+defaultExponentialBackoffWithJitter maximum seed failed = do
+  let (seed',jitter) = generate (uniformR 1 1000) seed
+      potential = 2 ^ (min 20 failed) * 1000 -- `min 20 failed` prevents overflow, but allows a reasonably high `maximum`
+      delay = (min maximum potential + jitter) * 1000
+  threadDelay delay
+  pure seed'
+
+clientWSWith :: Backoff -> StreamReader -> StreamWriter -> WS.ConnectionOptions -> String -> Int -> IO WebSocket
+clientWSWith backoff reader writer options host port = do
   ws <- websocket
   modifyIORef' ws $ \ws -> ws
     { wsStreamReader = reader
     , wsStreamWriter = writer
     , wsConnectionOptions = options
     }
-  connectWithExponentialBackoff ws 5
+  forkIO $ do
+    s <- newSeed -- open system random source once per outbound websocket connection
+    connectWith True ws 0 s
   return ws
   where
-    connectWithExponentialBackoff ws_ n = do
-      let interval = 50000
+    connectWith first ws_ n s = do
       msock <- newClientSocket host port
       case msock of
         Nothing -> do
           setStatus ws_ Connecting
-          void $ forkIO $ do
-            gen <- newStdGen -- yuck
-            let (r,_) = randomR (1,2 ^ n - 1) gen
-                i = interval * r
-            threadDelay i
-            connectWithExponentialBackoff ws_ (min (n + 1) 8)
+          connectWith first ws_ (n + 1) =<< backoff s (n + 1) 
         Just sock -> do
           sa <- S.getPeerName sock
           streams <- Streams.socketToStreams sock
@@ -251,10 +258,13 @@ clientWSWith reader writer options host port = do
           wsStream <- makeStream ws_ streams
           c <- WS.runClientWithStream wsStream host "/" (wsConnectionOptions ws) [] return
           ws <- readIORef ws_
-          _ <- onStatus ws_ $ \status ->
-            case status of
-              Closed _ -> connectWithExponentialBackoff ws_ 5
-              _        -> return ()
+          when first $ do
+            void $ do
+              onStatus ws_ $ \status ->
+                case status of
+                  Closed _ -> do
+                    void (forkIO (connectWith False ws_ 0 s))
+                  _        -> return ()
           rt <- forkIO $ receiveLoop ws_ c
           modifyIORef' ws_ $ \ws -> ws
             { wsSocket = Just (sa,sock,c,wsStream)
@@ -285,31 +295,27 @@ serverWSSWith reader writer options sock ssl = SSL.withOpenSSL $ do
   return ws_
 
 clientWSS :: String -> Int -> IO WebSocket
-clientWSS = clientWSSWith defaultStreamReader defaultStreamWriter WS.defaultConnectionOptions
+clientWSS = clientWSSWith (defaultExponentialBackoffWithJitter 32000) defaultStreamReader defaultStreamWriter WS.defaultConnectionOptions
 
-clientWSSWith :: StreamReader -> StreamWriter -> WS.ConnectionOptions -> String -> Int -> IO WebSocket
-clientWSSWith reader writer options host port = SSL.withOpenSSL $ do
+clientWSSWith :: Backoff -> StreamReader -> StreamWriter -> WS.ConnectionOptions -> String -> Int -> IO WebSocket
+clientWSSWith backoff reader writer options host port = SSL.withOpenSSL $ do
   ws <- websocket
   modifyIORef' ws $ \ws -> ws
     { wsStreamReader = reader
     , wsStreamWriter = writer
     , wsConnectionOptions = options
     }
-  connectWithExponentialBackoff ws 0
+  forkIO $ do
+    s <- newSeed -- open system random source once per outbound websocket connection
+    connectWith ws 0 s
   return ws
   where
-    connectWithExponentialBackoff ws_ n = do
-      let interval = 50000
+    connectWith ws_ n s = do
       msock <- newClientSocket host port
       case msock of
         Nothing -> do
           setStatus ws_ Connecting
-          void $ forkIO $ do
-            gen <- newStdGen
-            let (r,_) = randomR (1,2 ^ n - 1) gen
-                i = interval * r
-            threadDelay i
-            connectWithExponentialBackoff ws_ (min (n + 1) 12) -- ~ 200 second max interval; average max interval 100 seconds
+          connectWith ws_ (n + 1) =<< backoff s (n + 1) 
         Just sock -> do
           sa <- S.getPeerName sock
           ssl <- sslConnect sock
@@ -319,7 +325,7 @@ clientWSSWith reader writer options host port = SSL.withOpenSSL $ do
           c <- WS.runClientWithStream wsStream host "/" (wsConnectionOptions ws) [] return
           _ <- onStatus ws_ $ \status ->
             case status of
-              Closed _ -> connectWithExponentialBackoff ws_ 0
+              Closed _ -> void (forkIO (connectWith ws_ 0 s))
               _        -> return ()
           rt <- forkIO $ receiveLoop ws_ c
           modifyIORef' ws_ $ \ws -> ws
@@ -349,36 +355,22 @@ receiveLoop ws_ c = go
                   Left e -> Left (Closed UnexpectedClosure)
                   Right (WS.Binary b) -> Right b
                   Right (WS.Text t _) -> Right t
-#if defined(DEBUGWS) || defined(DEVEL)
-      Prelude.putStrLn $ "Received websocket message: " ++ show eem
-#endif
       case eem of
         Right str ->
           case eitherDecode' str of
-            Left _  -> close ws_ InvalidMessage
+            Left _  -> do
+              close ws_ InvalidMessage
             Right m -> do
               ws <- readIORef ws_
               case Map.lookup (ep m) (wsDispatchCallbacks ws) of
                 Nothing -> do
-#if defined(DEBUGWS) || defined(DEVEL)
-                  Prelude.putStrLn $ "Unhandled message: " ++ show (encode m)
-#endif
                   go
                 Just cbs -> do
-#if defined(DEBUGWS) || defined(DEVEL)
-                  Prelude.putStrLn $ "Dispatching message: " ++ show (encode m)
-#endif
                   for_ cbs (readIORef >=> ($ m))
                   go
 
         Left (Closed cr) -> do
-#if defined(DEBUGWS) || defined(DEVEL)
-          Prelude.putStrLn "Websocket is closed; receiveloop failed."
-#endif
           close ws_ cr
-
-newListenSocket :: String -> Int -> IO S.Socket
-newListenSocket hn p = WS.makeListenSocket hn p
 
 sslSetupServer keyFile certFile mayChainFile = SSL.withOpenSSL $ do
   ctx <- SSL.context
@@ -386,7 +378,7 @@ sslSetupServer keyFile certFile mayChainFile = SSL.withOpenSSL $ do
   SSL.contextSetCertificateFile ctx certFile
   forM_ mayChainFile (SSL.contextSetCertificateChainFile ctx)
   SSL.contextSetCiphers ctx "HIGH"
-  SSL.contextSetVerificationMode ctx VerifyNone -- VerifyPeer?
+  SSL.contextSetVerificationMode ctx (VerifyPeer True True Nothing)
   return ctx
 
 sslAccept conn = do
@@ -401,22 +393,15 @@ sslConnect conn = do
   SSL.connect ssl
   return ssl
 
+-- TODO: figure out what's going on when setting NoDelay.
 newClientSocket host port = E.handle (\(_ :: IOException) -> return Nothing) $ do
-  let hints = S.defaultHints
-                  { S.addrFlags = [S.AI_ADDRCONFIG, S.AI_NUMERICSERV]
-                  , S.addrFamily = S.AF_INET
-                  , S.addrSocketType = S.Stream
-                  }
+  let hints = S.defaultHints { S.addrSocketType = S.Stream }
       fullHost = host ++ ":" ++ show port
   (addrInfo:_) <- S.getAddrInfo (Just hints) (Just host) (Just $ show port)
-  let family = S.addrFamily addrInfo
-      socketType = S.addrSocketType addrInfo
-      protocol = S.addrProtocol addrInfo
-      address = S.addrAddress addrInfo
-  sock <- S.socket family socketType protocol
-  -- S.setSocketOption sock S.NoDelay 1
-  S.connect sock address
-  return $ Just sock
+  sock <- S.socket (S.addrFamily addrInfo) S.Stream S.defaultProtocol
+  S.setSocketOption sock S.NoDelay 1 -- prevents proper messaging...?
+  S.connect sock (S.addrAddress addrInfo) 
+  pure (Just sock)
 
 --------------------------------------------------------------------------------
 -- Custom file reading utilities
@@ -445,22 +430,31 @@ hGetContentsN chk h = streamRead
 --------------------------------------------------------------------------------
 -- Raw byte-level websocket access
 
-sendRaw :: WebSocket -> LazyByteString -> IO (Either Status ())
+sendRaw :: WebSocket -> LazyByteString -> IO (Either Status SendStatus)
 sendRaw ws_ b = do
   WebSocket {..} <- readIORef ws_
   case wsSocket of
     Just (_,_,c,_) -> do
-#if defined(DEBUGWS) || defined(DEVEL)
-      Prelude.putStrLn $ "sending: " ++ show b
-#endif
       eum <- E.handle (\(e :: IOException) -> return (Left ()))
                  (Right <$> WS.sendTextData c (TL.decodeUtf8 b))
       case eum of
         Left _ -> do
           close ws_ InvalidMessage
           return (Left (Closed InvalidMessage))
-        _ -> return (Right ())
-    Nothing -> return (Left wsStatus)
+        _ -> do
+          return (Right Sent)
+    Nothing -> do
+      cb <- newIORef undefined
+      st <- onStatus ws_ $ \s -> 
+        case s of
+          Opened -> void $ do
+            readIORef cb >>= scCleanup
+            sendRaw ws_ b
+          _ -> pure ()
+      writeIORef cb st
+      return (Right Buffered)
+
+data SendStatus = Buffered | Sent
 
 --------------------------------------------------------------------------------
 -- Streaming Dispatch interface to websockets
@@ -521,7 +515,7 @@ respond ws_ rqty_proxy f = do
   let header = requestHeader rqty_proxy
       bhvr m = f (readIORef s_ >>= dcCleanup)
                  $ maybe (Left m) (\rq -> Right
-                    (sendRaw ws_ . either (buildEncodedDispatchByteString (responseHeader rqty_proxy rq)) (encodeBS . encodeDispatch (responseHeader rqty_proxy rq))
+                    (fmap (fmap (const ())) . sendRaw ws_ . either (buildEncodedDispatchByteString (responseHeader rqty_proxy rq)) (encodeBS . encodeDispatch (responseHeader rqty_proxy rq))
                     , rq
                     )
                  ) (decodeDispatch m)
@@ -533,7 +527,7 @@ message :: ( Message mTy , M mTy ~ msg , ToJSON msg )
         => WebSocket
         -> Proxy mTy
         -> msg
-        -> IO (Either Status ())
+        -> IO (Either Status SendStatus)
 message ws_ mty_proxy m =
   sendRaw ws_ $ encodeBS $ encodeDispatch (messageHeader mty_proxy) m
 
@@ -542,7 +536,7 @@ apiMessage :: ( Message mTy , M mTy ~ msg , ToJSON msg , (mTy ∈ msgs) ~ 'True 
            -> WebSocket
            -> Proxy mTy
            -> msg
-           -> IO (Either Status ())
+           -> IO (Either Status SendStatus)
 apiMessage _ = message
 
 onMessage :: ( Message mTy

@@ -36,6 +36,7 @@ library
     pure-lifted,
     pure-txt,
     pure-json,
+    pure-random-pcg,
     pure-time,
     mtl,
     template-haskell,
@@ -55,7 +56,6 @@ library
         websockets      >= 0.11
       , network         >= 2.6
       , io-streams      >= 1.4
-      , random
       , text
       , HsOpenSSL       >= 0.11.1.1 && < 0.12
       , openssl-streams >= 1.2      && < 1.5

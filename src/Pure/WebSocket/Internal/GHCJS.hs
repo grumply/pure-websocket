@@ -30,6 +30,9 @@ import Pure.Data.JSON as AE
 -- from pure-lifted
 import Pure.Data.Lifted
 
+-- from pure-random-pcg
+import Pure.Random
+
 -- from pure-txt
 import Pure.Data.Txt (Txt,ToTxt(..),FromTxt(..))
 
@@ -142,75 +145,58 @@ newWS host port secure = do
 activateGHCJS :: WebSocket -> String -> Int -> Bool -> IO ()
 activateGHCJS = activate
 
+
+type FailedAttempts = Int
+type Milliseconds = Int
+type Backoff = Seed -> FailedAttempts -> IO Seed
+
+defaultExponentialBackoffWithJitter :: Milliseconds -> Backoff
+defaultExponentialBackoffWithJitter maximum seed failed = do
+  let (seed',jitter) = generate (uniformR 1 1000) seed
+      potential = 2 ^ (min 20 failed) * 1000 -- `min 20 failed` prevents overflow, but allows a reasonably high `maximum`
+      delay = (min maximum potential + jitter) * 1000
+  threadDelay delay
+  pure seed'
+
 activate :: WebSocket -> String -> Int -> Bool -> IO ()
-activate ws host port secure = do
-  delayFactor_ <- newIORef 6
-  connectWithExponentialBackoff ws delayFactor_
+activate = activateWith (defaultExponentialBackoffWithJitter 32000)
+
+activateWith :: Backoff -> WebSocket -> String -> Int -> Bool -> IO ()
+activateWith backoff ws host port secure = do
+  s <- newSeed
+  void $ do
+    forkIO $ do
+      connectWith ws 0 s
   where
-    connectWithExponentialBackoff ws_ df_ = do
-
-      df <- readIORef df_
-      when (df == 6) (setStatus ws_ Connecting)
-
-      let interval = 50000
+    connectWith ws_ n s = do
+      let retry = connectWith ws_ (n + 1) =<< backoff s (n + 1)
 
       msock <- tryNewWebSocket (toTxt $ (if secure then "wss://" else "ws://") ++ host ++ ':': show port)
-
-      let retry = void $ forkIO $ do
-            delay <- readIORef df_
-
-            -- vary the delay to try to avoid thundering herd
-            i <- random (interval * (2 ^ delay - 1))
-            threadDelay i
-
-            let
-#if defined(DEBUGWS) || defined(DEVEL)
-              newDelayFactor = 5 -- 800ms max, 400ms average
-#else
-              newDelayFactor = min (delay + 1) 9 -- max 50s
-#endif
-            writeIORef df_ newDelayFactor
-            connectWithExponentialBackoff ws_ df_
 
       case msock of
         Nothing -> retry
 
         Just sock -> do
 
-          openCallback <- CB.syncCallback1 CB.ContinueAsync $ \_ -> do
-            writeIORef df_ 6 -- this is why df_ needs to be wrapped in an IORef
-            setStatus ws_ Opened
-          addEventListener sock "open" openCallback False
-
-          closeCallback <- CB.syncCallback1 CB.ContinueAsync $ \_ -> do
-            writeIORef df_ 6
-            setStatus ws_ (Closed UnexpectedClosure)
-          addEventListener sock "close" closeCallback False
-
-          errorCallback <- CB.syncCallback1 CB.ContinueAsync $ \err -> do
-            setStatus ws_ (Errored err)
-          addEventListener sock "error" errorCallback False
-
+          openCallback    <- CB.syncCallback1 CB.ContinueAsync $ \_ -> setStatus ws_ Opened
+          closeCallback   <- CB.syncCallback1 CB.ContinueAsync $ \_ -> setStatus ws_ (Closed UnexpectedClosure)
+          errorCallback   <- CB.syncCallback1 CB.ContinueAsync $ \err -> setStatus ws_ (Errored err)
           messageCallback <- CB.syncCallback1 CB.ContinueAsync $ \ev -> do
             case WME.getData $ unsafeCoerce ev of
               WME.StringData sd -> do
-#if defined(DEBUGWS) || defined(DEVEL)
-                putStrLn $ "Received message: " ++ show sd
-#endif
                 case fromJSON (js_JSON_parse sd) of
                   Error e -> putStrLn $ "fromJSON failed with: " ++ e
                   Success m -> do
                     ws <- readIORef ws_
                     case Map.lookup (ep m) (wsDispatchCallbacks ws) of
                       Nothing   -> putStrLn $ "No handler found: " ++ show (ep m)
-                      Just dcbs -> do
-#if defined(DEBUGWS) || defined(DEVEL)
-                        putStrLn $ "Handled message at endpoint: " ++ show (ep m)
-#endif
-                        for_ dcbs (readIORef >=> ($ m))
+                      Just dcbs -> for_ dcbs (readIORef >=> ($ m))
 
               _ -> return ()
 
+          addEventListener sock "open" openCallback False
+          addEventListener sock "close" closeCallback False
+          addEventListener sock "error" errorCallback False
           addEventListener sock "message" messageCallback False
 
           scb <- onStatus ws_ $ \case
@@ -222,12 +208,12 @@ activate ws host port secure = do
               CB.releaseCallback ecb
               CB.releaseCallback mcb
               scCleanup scb
-              modifyIORef ws_ $ \ws -> ws { wsSocket = Nothing }
-              retry
+              modifyIORef' ws_ $ \ws -> ws { wsSocket = Nothing }
+              void (forkIO retry)
 
             _ -> return ()
 
-          modifyIORef ws_ $ \ws -> ws
+          modifyIORef' ws_ $ \ws -> ws
             { wsSocket = Just (sock,openCallback,closeCallback,errorCallback,messageCallback,scb) }
 
 clientWS :: String -> Int -> IO WebSocket
